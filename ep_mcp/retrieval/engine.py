@@ -240,22 +240,26 @@ class RetrievalEngine:
                 for fp, fp_chunks in neighbor_chunks_by_fp.items():
                     if added_count >= max_results:
                         break
-                    for nc in fp_chunks:
-                        nc_id = nc["id"]
-                        if nc_id in existing_chunk_ids:
-                            continue
 
-                        neighbor_score = parent_score * current_discount
-                        if neighbor_score < graph_min_score:
-                            continue
+                    neighbor_score = parent_score * current_discount
+                    if neighbor_score < graph_min_score:
+                        continue
 
-                        fused[nc_id] = neighbor_score
-                        chunks[nc_id] = nc
-                        existing_chunk_ids.add(nc_id)
-                        added_count += 1
+                    # Add only the primary chunk (lowest chunk_index) per neighbor file
+                    # to prevent oversized split files from flooding results
+                    best_chunk = min(
+                        (nc for nc in fp_chunks if nc["id"] not in existing_chunk_ids),
+                        key=lambda c: c.get("chunk_index", 0),
+                        default=None,
+                    )
+                    if best_chunk is None:
+                        continue
 
-                        if added_count >= max_results:
-                            break
+                    nc_id = best_chunk["id"]
+                    fused[nc_id] = neighbor_score
+                    chunks[nc_id] = best_chunk
+                    existing_chunk_ids.add(nc_id)
+                    added_count += 1
 
                 # Next hop: deeper discount, advance frontier
                 visited_files.update(next_level_files)
