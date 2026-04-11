@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+import time
+
 from ..retrieval.engine import RetrievalEngine
 from ..retrieval.models import SearchRequest, SearchResult
+
+logger = logging.getLogger(__name__)
 
 
 async def ep_search(
@@ -24,7 +29,11 @@ async def ep_search(
 
     Returns:
         List of result dicts matching the MCP output schema
+
+    Raises:
+        ToolError: On retrieval failure (logged with context)
     """
+    t0 = time.monotonic()
     request = SearchRequest(
         query=query,
         type=type,
@@ -32,7 +41,27 @@ async def ep_search(
         max_results=min(max(max_results, 1), 50),
     )
 
-    results = await engine.search(request)
+    try:
+        results = await engine.search(request)
+    except Exception:
+        logger.exception(
+            "ep_search failed | pack=%s query=%r type=%s tags=%s",
+            engine.pack.slug, query, type, tags,
+        )
+        raise
+
+    elapsed_ms = (time.monotonic() - t0) * 1000
+    logger.info(
+        "ep_search | pack=%s query=%r type=%s tags=%s "
+        "results=%d top_score=%.4f elapsed=%.0fms",
+        engine.pack.slug,
+        query,
+        type,
+        tags,
+        len(results),
+        results[0].score if results else 0.0,
+        elapsed_ms,
+    )
 
     return [
         {

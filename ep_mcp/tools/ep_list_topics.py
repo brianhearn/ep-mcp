@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+
 from ..pack.models import Pack
+
+logger = logging.getLogger(__name__)
 
 
 def ep_list_topics(pack: Pack, type: str | None = None) -> dict:
@@ -47,7 +51,13 @@ def ep_list_topics(pack: Pack, type: str | None = None) -> dict:
             "last_full_review": pack.freshness.last_full_review,
         }
 
-    return {
+    result = {
         "pack": pack_info,
         "topics": topics,
     }
+    total_topics = sum(len(v) for v in topics.values())
+    logger.info(
+        "ep_list_topics | pack=%s type_filter=%s types=%d files=%d",
+        pack.slug, type, len(topics), total_topics,
+    )
+    return result

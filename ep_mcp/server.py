@@ -82,8 +82,18 @@ def create_pack_mcp(slug: str, pack: Pack, engine: RetrievalEngine):
         Returns:
             JSON array of ranked results with provenance metadata.
         """
-        results = await ep_search(engine, query, type, tags, max_results)
-        return json.dumps(results, indent=2)
+        try:
+            results = await ep_search(engine, query, type, tags, max_results)
+            return json.dumps(results, indent=2)
+        except Exception as e:
+            logger.exception(
+                "ep_search_tool error | pack=%s query=%r", slug, query,
+            )
+            return json.dumps({
+                "error": str(e),
+                "pack": slug,
+                "query": query,
+            })
 
     @mcp.tool(
         annotations={
@@ -103,8 +113,14 @@ def create_pack_mcp(slug: str, pack: Pack, engine: RetrievalEngine):
         Returns:
             JSON with pack metadata and grouped file listing.
         """
-        result = ep_list_topics(pack, type)
-        return json.dumps(result, indent=2)
+        try:
+            result = ep_list_topics(pack, type)
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            logger.exception(
+                "ep_list_topics_tool error | pack=%s type=%s", slug, type,
+            )
+            return json.dumps({"error": str(e), "pack": slug})
 
     @mcp.resource(f"ep://{slug}/manifest")
     async def get_manifest() -> str:
