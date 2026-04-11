@@ -233,11 +233,15 @@ Designed from day one:
 
 ## Testing Strategy
 
+### Deployment Target
+EZT Help Bot droplet (`64.225.0.26`) — already hosts the ezt-designer pack and has the infrastructure in place. EP MCP server will run alongside (or replace) the existing help bot.
+
 ### Primary: Direct HTTP Testing
 Streamable HTTP is standard HTTP — testable directly without a UI host:
 - **curl / Python requests** — raw JSON-RPC calls to validate protocol compliance
 - **MCP Python client SDK** — full protocol simulation (capability negotiation, initialization handshake, tool calls)
 - **Automated integration tests** — load pack, run search queries, validate retrieval quality against known-good answers
+- Tests run from EasyBot droplet (`129.212.189.28`) against the help bot droplet
 
 ### Secondary: MCP Host Testing
 - **Claude.ai (web)** — supports connecting to remote MCP servers over Streamable HTTP. Visual demo surface for human testing.
