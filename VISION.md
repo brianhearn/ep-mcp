@@ -1,6 +1,6 @@
 # ExpertPack MCP — Vision
 
-**Version:** 0.2 (Draft)
+**Version:** 0.3 (Draft)
 **Date:** 2026-04-11
 **Authors:** Brian Hearn, EasyBot
 
@@ -31,6 +31,16 @@ Today, the options for giving an agent domain expertise are:
 3. **Manual context stuffing** — copy-paste into prompts, doesn't scale
 
 None of these treat expertise as a first-class, structured, portable artifact.
+
+---
+
+## Why ExpertPack + MCP
+
+MCP matters because it makes the expertise service **agent-native and portable** — any MCP-compatible host (Claude, Cursor, Windsurf, custom apps) can connect without custom integration. The agent doesn't need to know how retrieval works; it just calls a tool and gets expert content back.
+
+ExpertPack matters because it makes the knowledge itself **structured, verifiable, and maintainable** — not a pile of documents in a vector store, but a schema-validated pack with provenance, freshness guarantees, and graph relationships.
+
+Together: ExpertPack structures expertise. ExpertPack MCP serves it to any agent. The result is an expertise-as-a-service layer that is portable across hosts, trustworthy in its sourcing, and maintainable over time.
 
 ---
 
@@ -69,6 +79,8 @@ The open-source core. Loads any valid ExpertPack and exposes it over MCP.
 - **Prompts** (roadmap) — Pack-aware prompt templates for common domain workflows (e.g., `/plan_territories`, `/compare_methods`). Not in first release; will be informed by real usage patterns.
 
 **Does not contain:** Any domain-specific logic or tools. Knows about ExpertPacks, not about territories or 3D modeling or solar panels.
+
+**Boundary rule:** ExpertPack MCP answers questions and exposes knowledge. Domain MCP servers perform domain actions. This separation is architectural, not negotiable.
 
 ### Layer 2: Domain MCP Servers (Domain-Specific)
 
@@ -165,8 +177,8 @@ A registry of EP MCP servers — discoverable expertise endpoints. Developers pu
 1. Server runs as a cloud-hosted Streamable HTTP endpoint
 2. Load the `ezt-designer` pack
 3. Send MCP-compliant search queries over HTTP and receive expert answers
-4. Get accurate, sourced answers that an agent without the EP couldn't produce
-5. Provenance metadata included in all responses
+4. **Retrieval quality matches or exceeds help bot eval baselines** (84.8% correctness, ≤13% hallucination — Run 12 baseline, Sonnet judge)
+5. Provenance metadata (id, content_hash, verified_at) included in all responses
 6. Authentication enforced — unauthenticated requests rejected
 7. Testable directly via HTTP (curl, Python, MCP client SDK) without requiring a UI host
 
