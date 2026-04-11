@@ -42,7 +42,8 @@ class RetrievalConfig(BaseModel):
     always_tier_boost: float = 0.02
     graph_expansion_enabled: bool = True
     graph_expansion_depth: int = 1
-    graph_expansion_discount: float = 0.6
+    graph_expansion_discount: float = 0.85
+    graph_expansion_min_score: float = 0.20
 
 
 class ServerConfig(BaseModel):

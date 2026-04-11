@@ -207,12 +207,12 @@ class TestGraphExpansion:
                 assert score == pytest.approx(parent_score * discount)
 
     def test_graph_expansion_respects_min_score(self, store):
-        """Neighbors below min_score after discounting should be excluded."""
+        """Neighbors below graph_expansion_min_score after discounting should be excluded."""
         chunk_ids = _seed_chunks(store)
         pack = _build_pack_with_graph(NODES_RAW, EDGES)
         lookup = GraphLookup.from_raw_nodes(NODES_RAW)
 
-        # parent_score=0.5, discount=0.6 → neighbor_score=0.3 which is < min_score=0.35
+        # parent_score=0.5, discount=0.6 → neighbor_score=0.3 which is < graph_expansion_min_score=0.35
         fused = {chunk_ids["concepts/auto-build.md"]: 0.5}
         chunks = store.get_chunks_by_ids(list(fused.keys()))
 
@@ -220,7 +220,7 @@ class TestGraphExpansion:
             graph_expansion_enabled=True,
             graph_expansion_depth=1,
             graph_expansion_discount=0.6,
-            min_score=0.35,
+            graph_expansion_min_score=0.35,
         )
         engine = self._make_engine(store, pack, lookup, config)
 

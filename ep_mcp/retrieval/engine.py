@@ -190,7 +190,7 @@ class RetrievalEngine:
         lookup = self._graph_lookup
         discount = self.config.graph_expansion_discount
         depth = self.config.graph_expansion_depth
-        min_score = self.config.min_score
+        graph_min_score = self.config.graph_expansion_min_score
 
         # Sort current candidates by score descending, take top max_results as seeds
         sorted_candidates = sorted(fused.items(), key=lambda x: x[1], reverse=True)
@@ -246,7 +246,7 @@ class RetrievalEngine:
                             continue
 
                         neighbor_score = parent_score * current_discount
-                        if neighbor_score < min_score:
+                        if neighbor_score < graph_min_score:
                             continue
 
                         fused[nc_id] = neighbor_score
