@@ -37,13 +37,44 @@ def serve(config_path: str, transport: str) -> None:
         click.echo(f"Error loading config: {e}", err=True)
         sys.exit(1)
 
+    if not config.packs:
+        click.echo("Error: no packs configured", err=True)
+        sys.exit(1)
+
     click.echo(f"Starting EP MCP server on {config.host}:{config.port}")
     click.echo(f"Transport: {transport}")
     click.echo(f"Packs: {[p.slug for p in config.packs]}")
     click.echo(f"Embedding: {config.embedding.provider}/{config.embedding.model}")
 
-    # TODO: Wire up server.py, index manager, transport
-    click.echo("Server implementation pending — scaffold only")
+    import asyncio
+    import uvicorn
+    from .server import build_app, create_embedding_provider, init_pack
+
+    async def startup():
+        provider = create_embedding_provider(config)
+        pack_instances = {}
+        for pack_config in config.packs:
+            click.echo(f"Loading pack: {pack_config.slug} from {pack_config.path}")
+            inst = await init_pack(
+                slug=pack_config.slug,
+                pack_path=pack_config.path,
+                provider=provider,
+                config=config,
+            )
+            pack_instances[pack_config.slug] = inst
+            click.echo(f"  \u2705 {inst.pack.name}: {len(inst.pack.files)} files, "
+                       f"{inst.store.chunk_count()} chunks")
+        return build_app(config, pack_instances)
+
+    app = asyncio.run(startup())
+    click.echo(f"\nServer ready at http://{config.host}:{config.port}")
+    click.echo("Endpoints:")
+    click.echo(f"  GET  /health")
+    click.echo(f"  GET  /packs")
+    for p in config.packs:
+        click.echo(f"  POST /packs/{p.slug}/mcp")
+
+    uvicorn.run(app, host=config.host, port=config.port, log_level=config.log_level)
 
 
 @cli.command()
