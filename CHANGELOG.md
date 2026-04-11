@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Graph-aware retrieval** in `ep_search` — expands results by following `_graph.yaml` edges (BFS, configurable depth/discount)
+- **`ep_graph_traverse` MCP tool** — standalone graph exploration (depth 1-3, edge_kind filtering)
+- `GraphLookup` helper for bidirectional file_path ↔ node_id mapping
+- `SQLiteStore.get_chunks_by_file_paths()` for batch chunk lookup by file path
+- `RetrievalConfig` fields: `graph_expansion_enabled`, `graph_expansion_depth`, `graph_expansion_discount`
+- 14 new unit tests for graph retrieval and traversal (76 total)
+
 ### Changed
 ### Fixed
 ### Removed
