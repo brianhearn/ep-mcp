@@ -10,6 +10,8 @@ import click
 
 from .config import load_config
 from .pack.loader import PackLoadError, load_pack
+from .index.sqlite_store import SQLiteStore
+from .index.manager import IndexManager
 
 
 @click.group()
@@ -72,6 +74,54 @@ def validate(pack_path: str) -> None:
     always = sum(1 for f in pack.files.values() if f.retrieval_strategy == "always")
     on_demand = sum(1 for f in pack.files.values() if f.retrieval_strategy == "on_demand")
     click.echo(f"   Context tiers: {always} always, {on_demand} on_demand")
+
+
+@cli.command()
+@click.option("--pack", "-p", "pack_path", required=True, help="Path to ExpertPack directory")
+@click.option("--config", "-c", "config_path", default=None, help="Path to config YAML (for embedding settings)")
+def index(pack_path: str, config_path: str | None) -> None:
+    """Index a pack without starting the server."""
+    import asyncio
+
+    try:
+        pack = load_pack(pack_path)
+    except PackLoadError as e:
+        click.echo(f"\u274c Pack load failed: {e}", err=True)
+        sys.exit(1)
+
+    click.echo(f"Indexing: {pack.name} ({len(pack.files)} files)")
+
+    # Load embedding config
+    if config_path:
+        config = load_config(config_path)
+        emb_config = config.embedding
+    else:
+        from .config import EmbeddingConfig
+        emb_config = EmbeddingConfig()
+
+    # Create embedding provider
+    provider = _create_embedding_provider(emb_config)
+    click.echo(f"Embedding: {provider.model_name} ({provider.dimension}d)")
+
+    # Create store and index
+    store = SQLiteStore(pack.index_path, embedding_dimension=provider.dimension)
+    store.open()
+
+    try:
+        manager = IndexManager(pack, store, provider)
+        stats = asyncio.run(manager.build_index())
+        click.echo(f"\u2705 Indexed: {stats}")
+    finally:
+        store.close()
+
+
+def _create_embedding_provider(emb_config):
+    """Create an embedding provider from config."""
+    if emb_config.provider == "gemini":
+        from .embeddings.gemini import GeminiEmbeddingProvider
+        return GeminiEmbeddingProvider(model=emb_config.model)
+    else:
+        raise ValueError(f"Unsupported embedding provider: {emb_config.provider}")
 
 
 @cli.command()
