@@ -1,19 +1,100 @@
 # ExpertPack MCP
 
-A Model Context Protocol (MCP) server that exposes ExpertPack knowledge to any MCP-compatible agent.
+**Expertise-as-a-Service over the Model Context Protocol.**
 
-**Status:** Vision phase — no code yet.
+An MCP server that turns any [ExpertPack](https://github.com/brianhearn/ExpertPack) into a live, queryable knowledge service. Any MCP-compatible agent (Claude Desktop, Cursor, Windsurf, Claude.ai, custom hosts) can connect and retrieve high-quality, provenance-rich domain expertise via standardized tools.
 
-## What This Is
+**Current status:** v0.1.0 — deployed and running on the ExpertPack droplet (165.245.136.51).
 
-The standard way any AI agent accesses ExpertPack knowledge. Not just OpenClaw — Claude Desktop, Cursor, Windsurf, any MCP host. One EP, any agent.
+## Features
 
-## Repo
+- **Schema-aware hybrid retrieval**: BM25 + vector search (sqlite-vec), metadata boosting, MMR re-ranking
+- **Provenance-first**: Every result includes `id`, `content_hash`, `verified_at`, `source_file`
+- **EP-native chunking**: Files are treated as atomic retrieval units (split at `##` only for oversized content)
+- **Frontmatter aware**: Strips metadata for embedding, extracts `type`, `tags`, etc. for boosting/filtering
+- **Incremental indexing**: Content-hash based staleness detection — only re-embeds changed files
+- **Multi-pack support**: Path-based routing at `/packs/{slug}/mcp`
+- **Tools**:
+  - `ep_search` — primary hybrid retrieval tool
+  - `ep_list_topics` — browse pack structure and available content types
+- **Resources**:
+  - `ep://{slug}/manifest`
+  - `ep://{slug}/files`
+  - `ep://{slug}/file/{path}` (raw content with frontmatter)
+- **Transports**: Streamable HTTP (primary, cloud-ready), stdio (local dev)
+- **Auth**: API key (Phase 1), designed for OAuth 2.1 (Phase 2)
 
-- https://github.com/brianhearn/ExpertPack_MCP
+## Quick Start
 
-## Related
+### Installation
 
-- [ExpertPack Schema](https://github.com/brianhearn/ExpertPack) (public)
-- [ExpertPack Packs](https://github.com/brianhearn/ExpertPacks) (private)
-- EasyTerritory MCP (future) — an EP MCP server loaded with ezt-designer pack + EZT-specific tools
+```bash
+git clone https://github.com/brianhearn/ExpertPack_MCP.git
+cd ExpertPack_MCP
+pip install -e .[dev]
+```
+
+### Configuration
+
+Create `config.yaml`:
+
+```yaml
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+packs:
+  - slug: "ezt-designer"
+    path: "/data/packs/ezt-designer"
+    api_keys: ["your-secret-key-here"]
+
+embedding:
+  provider: "gemini"          # or "azure_openai", "openai"
+  model: "gemini-embedding-001"
+```
+
+Set required environment variables (`GEMINI_API_KEY`, etc.) or use a `.env` file.
+
+### Running
+
+```bash
+ep-mcp serve --config config.yaml
+```
+
+The server will load the pack(s), build or update the SQLite index (FTS5 + sqlite-vec), and expose MCP endpoints.
+
+## Current Performance
+
+- **Retrieval hit rate**: 90.9% on 22-question benchmark against the `ezt-designer` pack (845 chunks)
+- Benchmark derived from prior help-bot evaluations with Sonnet-as-judge
+
+## Tech Stack
+
+- **Language**: Python 3.12+
+- **MCP Framework**: FastMCP (from the official `mcp` SDK)
+- **Storage**: SQLite with FTS5 + [sqlite-vec](https://github.com/asg017/sqlite-vec)
+- **Embeddings**: Gemini (default), configurable Azure OpenAI / OpenAI providers
+- **Web**: Starlette + Uvicorn (for Streamable HTTP)
+- **CLI**: Click
+
+See `pyproject.toml` for exact dependencies.
+
+## Project Structure
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed module breakdown, retrieval pipeline, indexing strategy, and design decisions.
+
+## Related Repositories
+
+- **[ExpertPack](https://github.com/brianhearn/ExpertPack)** — Schema, validation tools, Obsidian compatibility
+- **[ExpertPacks](https://github.com/brianhearn/ExpertPacks)** — Published knowledge packs (private)
+- **EasyTerritory MCP** (future) — Domain-specific layer built on top of this repo + `ezt-designer` pack
+
+## License
+
+MIT © Brian Hearn
+
+## Author
+
+**Brian Hearn** — Partner, President & Lead Architect at [EasyTerritory](https://easyterritory.com)
+
+Built in 3 days (April 10–11, 2026): Vision → Architecture → Implementation → Deployment.
