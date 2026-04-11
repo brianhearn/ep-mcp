@@ -32,7 +32,7 @@ class RetrievalConfig(BaseModel):
 
     vector_weight: float = 0.7
     text_weight: float = 0.3
-    candidate_multiplier: int = 4
+    candidate_multiplier: int = 8
     mmr_enabled: bool = True
     mmr_lambda: float = 0.7
     min_score: float = 0.35

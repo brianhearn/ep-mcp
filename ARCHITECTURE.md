@@ -405,7 +405,7 @@ class RetrievalConfig:
     text_weight: float = 0.3
     
     # Candidate multiplier: fetch N × max_results candidates before fusion
-    candidate_multiplier: int = 4
+    candidate_multiplier: int = 8
     
     # MMR
     mmr_enabled: bool = True
