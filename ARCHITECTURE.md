@@ -1016,17 +1016,17 @@ The dependency footprint is deliberately small. EP MCP should install and run wi
 
 ---
 
-## 13. Open Questions (To Resolve During Implementation)
+## 13. Resolved Questions
 
-| # | Question | Options | Notes |
-|---|----------|---------|-------|
-| 1 | Pack hot-reload | File watcher vs restart vs API endpoint | File watcher adds complexity. Restart is simplest for MVP. API endpoint (`POST /packs/{slug}/reindex`) is a clean middle ground. |
-| 2 | Concurrent pack queries | Per-pack connection pool vs shared | SQLite handles concurrent reads well. Start with shared, add connection pooling if contention appears. |
-| 3 | Large result truncation | Truncate chunk text at N tokens vs return full | Agents benefit from full context. Return full for MVP; add optional `max_chunk_tokens` param later if needed. |
-| 4 | Embedding batch size | Provider-specific limits | Gemini: 100/batch. OpenAI: 2048/batch. Handle in provider implementations. |
-| 5 | Multi-pack composite queries | Cross-pack search in single query | Designed for but not implemented in MVP. Each pack has its own endpoint. |
-| 6 | Index storage location | Same dir as pack vs configurable | Configurable, default to `{pack_path}/.ep-mcp/` (gitignored). |
-| 7 | Startup indexing timeout | Block server start vs background | Block for MVP (pack indexing takes seconds for EP-scale). Background for large packs later. |
+| # | Question | Decision | Notes |
+|---|----------|----------|-------|
+| 1 | Pack hot-reload | **Restart** | Simplest for MVP. No file watcher, no reload API. Restart the server to pick up pack changes. |
+| 2 | Concurrent pack queries | **Per-pack connection pool** | Must support concurrent queries. SQLite WAL mode + read-only connection pool per pack. |
+| 3 | Large result truncation | **Return full, add param later** | Full content for MVP. Add optional `max_chunk_tokens` param in a future release if needed. |
+| 4 | Embedding batch size | **Provider-specific** | Handled internally by each provider implementation (Gemini: 100/batch, OpenAI: 2048/batch). |
+| 5 | Multi-pack composite queries | **Not implemented** | Out of scope. Keep it simple — each pack has its own endpoint. No cross-pack search. |
+| 6 | Index storage location | **Same directory as pack** | Index lives at `{pack_path}/.ep-mcp/index.db`. Add `.ep-mcp/` to `.gitignore`. |
+| 7 | Startup indexing timeout | **Block startup, background later** | Block for MVP (EP-scale indexing takes seconds). Add background indexing in a future release for large packs. |
 
 ---
 
