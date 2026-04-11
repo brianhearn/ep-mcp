@@ -281,7 +281,7 @@ CREATE TRIGGER chunks_au AFTER UPDATE ON chunks BEGIN
 END;
 
 -- Vector embeddings (sqlite-vec)
--- Dimension depends on embedding provider (e.g., 768 for Gemini, 1536/3072 for OpenAI)
+-- Dimension depends on embedding provider (e.g., 3072 for Gemini, 1536/3072 for OpenAI)
 CREATE VIRTUAL TABLE chunks_vec USING vec0(
     chunk_id INTEGER PRIMARY KEY,
     embedding FLOAT[{dimension}]
@@ -499,7 +499,7 @@ class EmbeddingProvider(ABC):
 
 | Provider | Class | Model | Dimensions | Notes |
 |----------|-------|-------|------------|-------|
-| Gemini | `GeminiEmbeddingProvider` | `gemini-embedding-001` | 768 | Default for dev/testing. Same provider used in OpenClaw's RAG. |
+| Gemini | `GeminiEmbeddingProvider` | `gemini-embedding-001` | 3072 | Default for dev/testing. Same provider used in OpenClaw's RAG. |
 | Azure OpenAI | `AzureOpenAIEmbeddingProvider` | `text-embedding-3-small` | 1536 | EZT production path. Requires Azure endpoint + API key or Entra ID. Supports adjustable dimensions. |
 | Azure OpenAI | `AzureOpenAIEmbeddingProvider` | `text-embedding-3-large` | 3072 | Higher quality, higher cost. Adjustable down to 256 dims. |
 | OpenAI | `OpenAIEmbeddingProvider` | `text-embedding-3-small` | 1536 | Direct OpenAI API. Same models as Azure, different auth. |
@@ -845,10 +845,10 @@ Configurable in server config. Default: restrictive (no open CORS).
 
 ### 10.1 MVP Deployment Target
 
-EZT Help Bot droplet (`64.225.0.26`):
+ExpertPack droplet (`165.245.136.51`):
 - Already hosts the `ezt-designer` pack (stripped, provenance backfilled)
-- Caddy reverse proxy available for TLS termination
-- Python 3.11+ available
+- Nginx reverse proxy available for TLS termination
+- Python 3.12+ available
 
 **Process architecture:**
 
@@ -857,7 +857,7 @@ Internet
     │
     ▼
 ┌─────────┐
-│  Caddy   │  TLS termination, reverse proxy
+│  Nginx   │  TLS termination, reverse proxy
 │  :443    │
 └────┬─────┘
      │
@@ -1075,6 +1075,6 @@ This is the architectural boundary: EP MCP provides knowledge, domain MCP provid
 2. ✅ Architecture (this document)
 3. ⬜ Implementation — start with pack loader + indexer + ep_search, then transport + auth
 4. ⬜ Validation — integration tests against ezt-designer, eval alignment
-5. ⬜ Deploy — EZT Help Bot droplet, Caddy reverse proxy, systemd
+5. ⬜ Deploy — ExpertPack droplet, nginx reverse proxy, systemd
 6. ⬜ EasyTerritory MCP — domain tools layer
 
