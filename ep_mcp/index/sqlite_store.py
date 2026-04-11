@@ -300,6 +300,31 @@ class SQLiteStore:
         ).fetchall()
         return {r["id"]: dict(r) for r in rows}
 
+    def get_chunks_by_file_paths(self, file_paths: list[str]) -> dict[str, list[dict]]:
+        """Get chunks grouped by file_path.
+
+        Args:
+            file_paths: List of file paths to look up.
+
+        Returns:
+            Mapping of file_path to list of chunk dicts for that file.
+        """
+        if not file_paths:
+            return {}
+        placeholders = ",".join("?" * len(file_paths))
+        rows = self.conn.execute(
+            f"SELECT * FROM chunks WHERE file_path IN ({placeholders})",
+            file_paths,
+        ).fetchall()
+        result: dict[str, list[dict]] = {}
+        for r in rows:
+            d = dict(r)
+            fp = d["file_path"]
+            if fp not in result:
+                result[fp] = []
+            result[fp].append(d)
+        return result
+
     # ── Embedding cache ──
 
     def get_cached_embedding(

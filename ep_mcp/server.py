@@ -22,6 +22,8 @@ from .index.sqlite_store import SQLiteStore
 from .pack.loader import load_pack
 from .pack.models import Pack
 from .retrieval.engine import RetrievalEngine
+from .retrieval.graph_helpers import GraphLookup
+from .tools.ep_graph_traverse import ep_graph_traverse
 from .tools.ep_list_topics import ep_list_topics
 from .tools.ep_search import ep_search
 
@@ -46,14 +48,20 @@ def create_embedding_provider(config: ServerConfig) -> EmbeddingProvider:
     raise ValueError(f"Unsupported embedding provider: {emb.provider}")
 
 
-def create_pack_mcp(slug: str, pack: Pack, engine: RetrievalEngine):
+def create_pack_mcp(
+    slug: str,
+    pack: Pack,
+    engine: RetrievalEngine,
+    graph_lookup: GraphLookup | None = None,
+):
     """Create a FastMCP instance with tools registered for a pack."""
     from mcp.server.fastmcp import FastMCP
 
     mcp = FastMCP(
         name=f"ep-mcp-{slug}",
         instructions=f"ExpertPack MCP server for {pack.name}. "
-        f"Use ep_search to find domain expertise and ep_list_topics to browse pack structure.",
+        f"Use ep_search to find domain expertise, ep_list_topics to browse pack structure, "
+        f"and ep_graph_traverse to explore knowledge graph connections.",
         stateless_http=True,
     )
 
@@ -122,6 +130,52 @@ def create_pack_mcp(slug: str, pack: Pack, engine: RetrievalEngine):
             )
             return json.dumps({"error": str(e), "pack": slug})
 
+    @mcp.tool(
+        annotations={
+            "readOnlyHint": True,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
+    )
+    async def ep_graph_traverse_tool(
+        file_path: str,
+        depth: int = 1,
+        edge_kinds: list[str] | None = None,
+    ) -> str:
+        """Traverse the ExpertPack knowledge graph from a starting file.
+
+        Explores connections between content files (concepts, workflows,
+        references, etc.) through the pack's knowledge graph.
+
+        Args:
+            file_path: Starting file path (e.g. 'concepts/auto-build.md').
+            depth: Number of hops to follow (1-3, default 1).
+            edge_kinds: Filter by edge types (wikilink, related, context).
+                       If omitted, follows all edge types.
+
+        Returns:
+            JSON with start node info, connected nodes, and traversal stats.
+        """
+        try:
+            result = ep_graph_traverse(
+                pack=pack,
+                graph_lookup=graph_lookup,
+                file_path=file_path,
+                depth=depth,
+                edge_kinds=edge_kinds,
+            )
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            logger.exception(
+                "ep_graph_traverse_tool error | pack=%s file_path=%r",
+                slug, file_path,
+            )
+            return json.dumps({
+                "error": str(e),
+                "pack": slug,
+                "file_path": file_path,
+            })
+
     @mcp.resource(f"ep://{slug}/manifest")
     async def get_manifest() -> str:
         """Get the pack's manifest.yaml as JSON."""
@@ -160,8 +214,9 @@ async def init_pack(
     stats = await manager.build_index()
     logger.info("Pack '%s' indexed: %s", slug, stats)
 
-    engine = RetrievalEngine(pack, store, provider, config.retrieval)
-    mcp = create_pack_mcp(slug, pack, engine)
+    graph_lookup = GraphLookup.from_pack(pack)
+    engine = RetrievalEngine(pack, store, provider, config.retrieval, graph_lookup)
+    mcp = create_pack_mcp(slug, pack, engine, graph_lookup)
 
     return PackInstance(pack=pack, store=store, engine=engine, mcp=mcp)
 

@@ -40,6 +40,9 @@ class RetrievalConfig(BaseModel):
     type_match_boost: float = 0.05
     tag_match_boost: float = 0.03
     always_tier_boost: float = 0.02
+    graph_expansion_enabled: bool = True
+    graph_expansion_depth: int = 1
+    graph_expansion_discount: float = 0.6
 
 
 class ServerConfig(BaseModel):
