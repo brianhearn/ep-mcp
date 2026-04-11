@@ -266,6 +266,10 @@ class SQLiteStore:
         Returns list of dicts with chunk_id, bm25_score.
         More negative = more relevant (FTS5 convention).
         """
+        # Sanitize query for FTS5: quote each token to prevent syntax errors
+        safe_query = _sanitize_fts5_query(query)
+        if not safe_query:
+            return []
         rows = self.conn.execute(
             """SELECT chunks.id as chunk_id, chunks_fts.rank as bm25_score
             FROM chunks_fts
@@ -273,7 +277,7 @@ class SQLiteStore:
             WHERE chunks_fts MATCH ?
             ORDER BY chunks_fts.rank
             LIMIT ?""",
-            (query, limit),
+            (safe_query, limit),
         ).fetchall()
         return [{"chunk_id": r["chunk_id"], "bm25_score": r["bm25_score"]} for r in rows]
 
@@ -360,6 +364,28 @@ class SQLiteStore:
     def commit(self) -> None:
         """Commit pending changes."""
         self.conn.commit()
+
+
+import re as _re
+
+# FTS5 special characters that need escaping
+_FTS5_SPECIAL = _re.compile(r'[^\w\s]', _re.UNICODE)
+
+
+def _sanitize_fts5_query(query: str) -> str:
+    """Sanitize a natural language query for FTS5 MATCH.
+
+    Strips punctuation and wraps each token in quotes to prevent
+    FTS5 syntax errors from characters like ?, *, (, etc.
+    """
+    # Remove special characters
+    clean = _FTS5_SPECIAL.sub(' ', query)
+    # Split into tokens, quote each one
+    tokens = [t.strip() for t in clean.split() if t.strip()]
+    if not tokens:
+        return ''
+    # Join with implicit AND (space-separated quoted tokens)
+    return ' '.join(f'"{t}"' for t in tokens)
 
 
 def _serialize_f32(vec: list[float]) -> bytes:
