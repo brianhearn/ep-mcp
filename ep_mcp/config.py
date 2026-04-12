@@ -44,6 +44,8 @@ class RetrievalConfig(BaseModel):
     graph_expansion_depth: int = 1
     graph_expansion_discount: float = 0.85
     graph_expansion_min_score: float = 0.20
+    graph_expansion_confidence_threshold: float = 0.38
+    graph_expansion_structural_bonus: float = 1.0
 
 
 class ServerConfig(BaseModel):

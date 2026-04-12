@@ -1,11 +1,12 @@
-"""Tests for graph expansion in the retrieval engine."""
+"""Tests for the new post-top-K additive graph expansion design."""
 
 from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import numpy as np
 import pytest
 
 from ep_mcp.config import RetrievalConfig
@@ -19,12 +20,14 @@ from ep_mcp.pack.models import (
 )
 from ep_mcp.retrieval.engine import RetrievalEngine
 from ep_mcp.retrieval.graph_helpers import GraphLookup
-from ep_mcp.retrieval.models import SearchRequest
+from ep_mcp.retrieval.models import SearchRequest, SearchResult
 
 
 def _fake_embedding(dim: int = 4) -> list[float]:
-    """Generate a simple test embedding."""
-    return [0.1 * i for i in range(dim)]
+    """Generate a simple test embedding (normalized for cosine)."""
+    vec = np.random.rand(dim).astype(np.float32)
+    vec /= np.linalg.norm(vec)
+    return vec.tolist()
 
 
 def _build_pack_with_graph(
@@ -126,13 +129,12 @@ EDGES = [
     GraphEdge(source="test-pack/concepts/auto-build", target="test-pack/workflows/wf-auto-build", kind="wikilink"),
     GraphEdge(source="test-pack/concepts/auto-build", target="test-pack/reference/ref-settings", kind="wikilink"),
     GraphEdge(source="test-pack/concepts/partitioning", target="test-pack/workflows/wf-partitioning", kind="wikilink"),
-    # Chain: auto-build -> partitioning (for multi-hop test)
     GraphEdge(source="test-pack/workflows/wf-auto-build", target="test-pack/concepts/partitioning", kind="wikilink"),
 ]
 
 
 class TestGraphExpansion:
-    """Tests for graph expansion in the retrieval pipeline."""
+    """Tests for the new post-top-K additive graph expansion."""
 
     def _make_engine(
         self,
@@ -153,170 +155,264 @@ class TestGraphExpansion:
             graph_lookup=graph_lookup,
         )
 
-    def test_graph_expansion_adds_neighbor_chunks(self, store):
-        """Graph expansion should add neighbor chunks to the candidate set."""
+    def test_graph_expansion_adds_bonus_neighbors(self, store):
+        """Neighbors added as bonus results after top-K; does not displace top-K."""
         chunk_ids = _seed_chunks(store)
         pack = _build_pack_with_graph(NODES_RAW, EDGES)
         lookup = GraphLookup.from_raw_nodes(NODES_RAW)
-
-        # Simulate fused scores: only auto-build.md is in the initial set
-        fused = {chunk_ids["concepts/auto-build.md"]: 0.8}
-        chunks = store.get_chunks_by_ids(list(fused.keys()))
 
         config = RetrievalConfig(
             graph_expansion_enabled=True,
-            graph_expansion_depth=1,
-            graph_expansion_discount=0.6,
-            min_score=0.1,
+            graph_expansion_confidence_threshold=0.5,
+            graph_expansion_min_score=0.1,
+            graph_expansion_structural_bonus=1.0,
         )
         engine = self._make_engine(store, pack, lookup, config)
 
-        new_fused, new_chunks = engine._apply_graph_expansion(
-            fused, chunks, max_results=10,
-        )
+        # Create finalized top-K results (post-MMR simulation)
+        top_k = [
+            SearchResult(
+                text="Auto build content",
+                source_file="concepts/auto-build.md",
+                score=0.85,
+                type="concept",
+                tags=[],
+                chunk_index=0,
+                graph_expanded=False,
+            ),
+            SearchResult(
+                text="Some other result",
+                source_file="other.md",
+                score=0.65,
+                type="concept",
+                tags=[],
+                chunk_index=0,
+                graph_expanded=False,
+            ),
+        ]
 
-        # Should have added neighbors: wf-auto-build.md and ref-settings.md
-        assert len(new_fused) == 3
-        assert chunk_ids["workflows/wf-auto-build.md"] in new_fused
-        assert chunk_ids["reference/ref-settings.md"] in new_fused
+        with patch.object(engine, '_load_embeddings_for_chunks') as mock_load:
+            mock_load.return_value = {
+                chunk_ids["workflows/wf-auto-build.md"]: _fake_embedding(),
+                chunk_ids["reference/ref-settings.md"]: _fake_embedding(),
+            }
+            bonus = engine._apply_graph_expansion(top_k, _fake_embedding(4))
 
-    def test_graph_expansion_respects_discount(self, store):
-        """Neighbor scores should be parent_score * discount."""
+        assert len(bonus) == 2
+        assert all(r.graph_expanded for r in bonus)
+        assert any("wf-auto-build" in r.source_file for r in bonus)
+        assert any("ref-settings" in r.source_file for r in bonus)
+        # Top-K not in bonus
+        assert not any(r in top_k for r in bonus)  # identity not, but check files
+        top_files = {r.source_file for r in top_k}
+        bonus_files = {r.source_file for r in bonus}
+        assert len(top_files & bonus_files) == 0
+
+    def test_no_expansion_below_confidence_threshold(self, store):
+        """No expansion when no seeds meet confidence_threshold."""
         chunk_ids = _seed_chunks(store)
         pack = _build_pack_with_graph(NODES_RAW, EDGES)
         lookup = GraphLookup.from_raw_nodes(NODES_RAW)
-
-        parent_score = 0.8
-        discount = 0.5
-        fused = {chunk_ids["concepts/auto-build.md"]: parent_score}
-        chunks = store.get_chunks_by_ids(list(fused.keys()))
 
         config = RetrievalConfig(
             graph_expansion_enabled=True,
-            graph_expansion_depth=1,
-            graph_expansion_discount=discount,
-            min_score=0.1,
+            graph_expansion_confidence_threshold=0.7,
+            graph_expansion_min_score=0.1,
         )
         engine = self._make_engine(store, pack, lookup, config)
 
-        new_fused, _ = engine._apply_graph_expansion(fused, chunks, max_results=10)
+        top_k = [
+            SearchResult(
+                text="Low confidence",
+                source_file="concepts/auto-build.md",
+                score=0.45,  # below 0.7
+                type="concept",
+                tags=[],
+                chunk_index=0,
+                graph_expanded=False,
+            ),
+        ]
 
-        # Neighbor score should be 0.8 * 0.5 = 0.4
-        for cid, score in new_fused.items():
-            if cid != chunk_ids["concepts/auto-build.md"]:
-                assert score == pytest.approx(parent_score * discount)
+        bonus = engine._apply_graph_expansion(top_k, _fake_embedding(4))
+        assert len(bonus) == 0
 
-    def test_graph_expansion_respects_min_score(self, store):
-        """Neighbors below graph_expansion_min_score after discounting should be excluded."""
+    def test_neighbor_below_min_score_excluded(self, store):
+        """Neighbor with cosine_sim < graph_expansion_min_score is excluded."""
         chunk_ids = _seed_chunks(store)
         pack = _build_pack_with_graph(NODES_RAW, EDGES)
         lookup = GraphLookup.from_raw_nodes(NODES_RAW)
-
-        # parent_score=0.5, discount=0.6 → neighbor_score=0.3 which is < graph_expansion_min_score=0.35
-        fused = {chunk_ids["concepts/auto-build.md"]: 0.5}
-        chunks = store.get_chunks_by_ids(list(fused.keys()))
 
         config = RetrievalConfig(
             graph_expansion_enabled=True,
-            graph_expansion_depth=1,
-            graph_expansion_discount=0.6,
-            graph_expansion_min_score=0.35,
+            graph_expansion_confidence_threshold=0.3,
+            graph_expansion_min_score=0.6,
+            graph_expansion_structural_bonus=1.0,
         )
         engine = self._make_engine(store, pack, lookup, config)
 
-        new_fused, _ = engine._apply_graph_expansion(fused, chunks, max_results=10)
+        top_k = [
+            SearchResult(
+                text="Seed",
+                source_file="concepts/auto-build.md",
+                score=0.75,
+                type="concept",
+                tags=[],
+                chunk_index=0,
+                graph_expanded=False,
+            ),
+        ]
 
-        # No neighbors should be added (0.5 * 0.6 = 0.3 < 0.35)
-        assert len(new_fused) == 1
+        # Mock embeddings to force low cosine sim
+        with patch.object(engine, '_load_embeddings_for_chunks') as mock_load:
+            low_sim_emb = [1.0, 0.0, 0.0, 0.0]  # orthogonal to typical query
+            mock_load.return_value = {999: low_sim_emb}
+            bonus = engine._apply_graph_expansion(top_k, [0.0, 1.0, 0.0, 0.0])
 
-    def test_graph_expansion_noops_when_graph_is_none(self, store):
-        """Graph expansion should no-op when pack.graph is None."""
-        chunk_ids = _seed_chunks(store)
-        pack = _build_pack_no_graph()
+        assert len(bonus) == 0
 
-        fused = {chunk_ids["concepts/auto-build.md"]: 0.8}
-        chunks = store.get_chunks_by_ids(list(fused.keys()))
-
-        config = RetrievalConfig(graph_expansion_enabled=True)
-        engine = self._make_engine(store, pack, None, config)
-
-        new_fused, _ = engine._apply_graph_expansion(fused, chunks, max_results=10)
-
-        assert len(new_fused) == 1
-
-    def test_graph_expansion_noops_when_disabled(self, store):
-        """Graph expansion should no-op when config disables it."""
-        chunk_ids = _seed_chunks(store)
-        pack = _build_pack_with_graph(NODES_RAW, EDGES)
-        lookup = GraphLookup.from_raw_nodes(NODES_RAW)
-
-        fused = {chunk_ids["concepts/auto-build.md"]: 0.8}
-        chunks = store.get_chunks_by_ids(list(fused.keys()))
-
-        config = RetrievalConfig(
-            graph_expansion_enabled=False,
-            min_score=0.1,
-        )
-        engine = self._make_engine(store, pack, lookup, config)
-
-        new_fused, _ = engine._apply_graph_expansion(fused, chunks, max_results=10)
-
-        assert len(new_fused) == 1
-
-    def test_graph_expansion_multi_hop(self, store):
-        """Depth=2 should follow chains: auto-build -> wf-auto-build -> partitioning."""
+    def test_no_readdition_of_top_k_neighbors(self, store):
+        """Neighbor already in top-K is not re-added as bonus."""
         chunk_ids = _seed_chunks(store)
         pack = _build_pack_with_graph(NODES_RAW, EDGES)
         lookup = GraphLookup.from_raw_nodes(NODES_RAW)
-
-        fused = {chunk_ids["concepts/auto-build.md"]: 0.9}
-        chunks = store.get_chunks_by_ids(list(fused.keys()))
 
         config = RetrievalConfig(
             graph_expansion_enabled=True,
-            graph_expansion_depth=2,
-            graph_expansion_discount=0.7,
-            min_score=0.1,
+            graph_expansion_confidence_threshold=0.5,
+            graph_expansion_min_score=0.1,
         )
         engine = self._make_engine(store, pack, lookup, config)
 
-        new_fused, _ = engine._apply_graph_expansion(fused, chunks, max_results=20)
+        top_k = [
+            SearchResult(
+                text="Seed",
+                source_file="concepts/auto-build.md",
+                score=0.8,
+                type="concept",
+                tags=[],
+                chunk_index=0,
+                graph_expanded=False,
+            ),
+            SearchResult(
+                text="Already in top-K",
+                source_file="workflows/wf-auto-build.md",
+                score=0.6,
+                type="workflow",
+                tags=[],
+                chunk_index=0,
+                graph_expanded=False,
+            ),
+        ]
 
-        # Depth 1: wf-auto-build, ref-settings
-        # Depth 2: partitioning (via wf-auto-build -> partitioning edge)
-        assert chunk_ids["workflows/wf-auto-build.md"] in new_fused
-        assert chunk_ids["reference/ref-settings.md"] in new_fused
-        assert chunk_ids["concepts/partitioning.md"] in new_fused
+        with patch.object(engine, '_load_embeddings_for_chunks') as mock_load:
+            mock_load.return_value = {chunk_ids.get("reference/ref-settings.md", 999): _fake_embedding()}
+            bonus = engine._apply_graph_expansion(top_k, _fake_embedding(4))
 
-        # Depth-2 neighbor should have discount^2 score: 0.9 * 0.7 * 0.7 = 0.441
-        part_score = new_fused[chunk_ids["concepts/partitioning.md"]]
-        assert part_score == pytest.approx(0.9 * 0.7 * 0.7)
+        # Only ref-settings should be added, wf-auto-build skipped
+        assert len(bonus) == 1
+        assert "ref-settings" in bonus[0].source_file
 
-    def test_graph_expansion_duplicate_suppression(self, store):
-        """Neighbors already in the candidate set should not be re-added."""
+    def test_graph_expanded_flag_set(self, store):
+        """Bonus results must have graph_expanded=True."""
         chunk_ids = _seed_chunks(store)
         pack = _build_pack_with_graph(NODES_RAW, EDGES)
         lookup = GraphLookup.from_raw_nodes(NODES_RAW)
 
-        # Both auto-build and its neighbor wf-auto-build are already in fused
-        fused = {
-            chunk_ids["concepts/auto-build.md"]: 0.8,
-            chunk_ids["workflows/wf-auto-build.md"]: 0.7,
-        }
-        chunks = store.get_chunks_by_ids(list(fused.keys()))
-
         config = RetrievalConfig(
             graph_expansion_enabled=True,
-            graph_expansion_depth=1,
-            graph_expansion_discount=0.6,
-            min_score=0.1,
+            graph_expansion_confidence_threshold=0.4,
+            graph_expansion_min_score=0.1,
         )
         engine = self._make_engine(store, pack, lookup, config)
 
-        new_fused, _ = engine._apply_graph_expansion(fused, chunks, max_results=10)
+        top_k = [SearchResult(source_file="concepts/auto-build.md", score=0.75, text="", tags=[], graph_expanded=False)]
 
-        # wf-auto-build should keep its original score of 0.7, not be overwritten
-        assert new_fused[chunk_ids["workflows/wf-auto-build.md"]] == 0.7
+        with patch.object(engine, '_load_embeddings_for_chunks') as mock_load, \
+             patch.object(engine.store, 'get_chunks_by_file_paths') as mock_get_chunks:
+            mock_emb = _fake_embedding(4)
+            mock_load.return_value = {999: mock_emb}
+            # Mock chunk return for neighbor lookup
+            mock_get_chunks.return_value = {
+                "reference/ref-settings.md": [{
+                    "id": 999,
+                    "content": "Settings content",
+                    "file_path": "reference/ref-settings.md",
+                    "type": "reference",
+                    "tags": "[]",
+                    "chunk_index": 0,
+                    "title": "Settings Reference",
+                    "prov_id": None,
+                    "content_hash": None,
+                    "verified_at": None,
+                }]
+            }
+            bonus = engine._apply_graph_expansion(top_k, _fake_embedding(4))
 
-        # ref-settings should be added as neighbor of auto-build
-        assert chunk_ids["reference/ref-settings.md"] in new_fused
+        assert len(bonus) == 1
+        assert bonus[0].graph_expanded is True
+
+    def test_structural_bonus_applied(self, store):
+        """final_score = cosine_sim * graph_expansion_structural_bonus."""
+        chunk_ids = _seed_chunks(store)
+        pack = _build_pack_with_graph(NODES_RAW, EDGES)
+        lookup = GraphLookup.from_raw_nodes(NODES_RAW)
+
+        config = RetrievalConfig(
+            graph_expansion_enabled=True,
+            graph_expansion_confidence_threshold=0.4,
+            graph_expansion_min_score=0.0,
+            graph_expansion_structural_bonus=1.15,
+        )
+        engine = self._make_engine(store, pack, lookup, config)
+
+        top_k = [SearchResult(source_file="concepts/auto-build.md", score=0.8, text="", tags=[], graph_expanded=False)]
+
+        query_emb = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        neighbor_emb = np.array([0.8, 0.6, 0.0, 0.0], dtype=np.float32)
+        neighbor_emb /= np.linalg.norm(neighbor_emb)
+        cosine_sim = float(np.dot(query_emb, neighbor_emb))
+
+        with patch.object(engine, '_load_embeddings_for_chunks') as mock_load, \
+             patch.object(engine.store, 'get_chunks_by_file_paths') as mock_get_chunks:
+            mock_load.return_value = {999: neighbor_emb.tolist()}
+            mock_get_chunks.return_value = {
+                "reference/ref-settings.md": [{
+                    "id": 999,
+                    "content": "Settings content",
+                    "file_path": "reference/ref-settings.md",
+                    "type": "reference",
+                    "tags": "[]",
+                    "chunk_index": 0,
+                    "title": "Settings Reference",
+                    "prov_id": None,
+                    "content_hash": None,
+                    "verified_at": None,
+                }]
+            }
+            bonus = engine._apply_graph_expansion(top_k, query_emb.tolist())
+
+        assert len(bonus) == 1
+        expected_score = cosine_sim * 1.15
+        assert pytest.approx(bonus[0].score, 0.01) == round(expected_score, 4)
+
+    def test_noop_when_graph_none_or_disabled(self, store):
+        """Should return empty list (no-op) when graph is None or disabled."""
+        chunk_ids = _seed_chunks(store)
+        pack_no_graph = _build_pack_no_graph()
+        lookup = GraphLookup.from_raw_nodes(NODES_RAW)
+
+        top_k = [SearchResult(source_file="seed.md", score=0.9, text="", tags=[], graph_expanded=False)]
+        query_emb = _fake_embedding(4)
+
+        # Disabled
+        config_disabled = RetrievalConfig(graph_expansion_enabled=False)
+        engine_disabled = self._make_engine(store, pack_no_graph, lookup, config_disabled)
+        assert len(engine_disabled._apply_graph_expansion(top_k, query_emb)) == 0
+
+        # No graph
+        config_enabled = RetrievalConfig(graph_expansion_enabled=True)
+        engine_no_graph = self._make_engine(store, pack_no_graph, None, config_enabled)
+        assert len(engine_no_graph._apply_graph_expansion(top_k, query_emb)) == 0
+
+    # Legacy test names updated to reflect new behavior; old multi-hop/discount tests removed
+    # as they no longer apply to the post-top-K additive design (1-hop, independent scoring).

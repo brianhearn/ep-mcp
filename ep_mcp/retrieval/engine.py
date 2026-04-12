@@ -1,11 +1,19 @@
-"""Hybrid retrieval engine: vector + BM25 → fusion → boosting → graph expansion → MMR."""
+"""Hybrid retrieval engine: vector + BM25 → fusion → boosting → MMR → post-top-K graph expansion.
 
-from __future__ import annotations
+Updated pipeline (per new additive design):
+1. Vector + BM25 search → normalize → fuse → min_score filter
+2. Metadata boosting
+3. MMR re-ranking → top-K (finalized here, no interference from expansion)
+4. Post-top-K graph expansion (additive bonus neighbors only)
+5. Return top-K + bonus neighbors (flagged with graph_expanded=True)
+"""
 
 import json
 import logging
 import struct
 from dataclasses import dataclass
+
+import numpy as np
 
 from ..config import RetrievalConfig
 from ..embeddings.base import EmbeddingProvider
@@ -31,9 +39,11 @@ class RetrievalEngine:
     1. Vector search (sqlite-vec) + BM25 search (FTS5) in parallel
     2. Score normalization
     3. Score fusion (weighted combination)
-    4. Metadata boosting (type, tags, always-tier)
-    5. MMR re-ranking (diversity)
-    6. Return top K
+    4. Filter by min_score
+    5. Metadata boosting
+    6. MMR re-ranking (final top-K)
+    7. Post-top-K additive graph expansion (bonus results only)
+    8. Return results
     """
 
     def __init__(
@@ -62,7 +72,7 @@ class RetrievalEngine:
             request: Search query with optional type/tag filters
 
         Returns:
-            Ranked list of SearchResult objects
+            Ranked list of SearchResult objects (top-K + optional graph-expanded bonus results)
         """
         max_results = request.max_results
         candidate_count = max_results * self.config.candidate_multiplier
@@ -112,18 +122,10 @@ class RetrievalEngine:
             always_tier_boost=self.config.always_tier_boost,
         )
 
-        # Step 4.5: Graph expansion
-        fused, chunks = self._apply_graph_expansion(
-            fused, chunks, max_results=max_results,
-        )
-
-        # Sort by score for MMR input
+        # Step 5: MMR re-ranking → finalized top-K
         scored_list = sorted(fused.items(), key=lambda x: x[1], reverse=True)
 
-        # Step 5: MMR re-ranking
         if self.config.mmr_enabled and len(scored_list) > 1:
-            # Load embeddings for MMR diversity calculation (use current fused keys
-            # which may include graph-expanded chunks)
             all_chunk_ids = list(fused.keys())
             embeddings = self._load_embeddings_for_chunks(all_chunk_ids)
             scored_list = mmr_rerank(
@@ -134,8 +136,9 @@ class RetrievalEngine:
         else:
             scored_list = scored_list[:max_results]
 
-        # Step 6: Build results
-        results = []
+        # Step 6: Build core results from MMR top-K (before expansion)
+        top_k_results = []
+        top_k_chunk_ids_for_lookup = {}  # chunk_id -> result for later reference if needed
         for chunk_id, score in scored_list:
             chunk = chunks.get(chunk_id)
             if not chunk:
@@ -143,7 +146,7 @@ class RetrievalEngine:
 
             tags = _parse_tags(chunk.get("tags", "[]"))
 
-            results.append(SearchResult(
+            result = SearchResult(
                 text=chunk["content"],
                 source_file=chunk["file_path"],
                 id=chunk.get("prov_id"),
@@ -154,130 +157,132 @@ class RetrievalEngine:
                 tags=tags,
                 chunk_index=chunk.get("chunk_index", 0),
                 title=chunk.get("title"),
-            ))
+                graph_expanded=False,
+            )
+            top_k_results.append(result)
+            top_k_chunk_ids_for_lookup[chunk_id] = result
 
-        return results
+        # Step 7: Post-top-K additive graph expansion
+        bonus_results = self._apply_graph_expansion(
+            results=top_k_results,
+            query_embedding=query_embedding,
+        )
+
+        # Combine: top-K + bonus neighbors (bonus come after)
+        return top_k_results + bonus_results
 
     def _apply_graph_expansion(
         self,
-        fused: dict[int, float],
-        chunks: dict[int, dict],
-        max_results: int,
-    ) -> tuple[dict[int, float], dict[int, dict]]:
-        """Expand candidate set by adding graph-connected neighbor chunks.
+        results: list[SearchResult],
+        query_embedding: list[float],
+    ) -> list[SearchResult]:
+        """Additive post-top-K graph expansion.
 
-        For each top-scoring result, finds neighbors via the knowledge graph
-        and adds their chunks with a discounted score. Gracefully no-ops when
-        graph data is unavailable or expansion is disabled.
+        Identifies high-confidence seeds from finalized top-K, loads 1-hop neighbors
+        (excluding anything already in top-K), scores them independently against the
+        original query_embedding using cosine similarity, and includes qualifying
+        neighbors as bonus results flagged with graph_expanded=True.
+
+        Does NOT displace or alter the top-K results. Gracefully no-ops when
+        graph is unavailable, expansion is disabled, or no high-confidence seeds.
 
         Args:
-            fused: Current {chunk_id: score} mapping after metadata boosting.
-            chunks: Current {chunk_id: chunk_data} mapping.
-            max_results: Cap on total graph-expanded additions.
+            results: Finalized top-K SearchResult list (post-MMR).
+            query_embedding: Original query embedding vector for independent neighbor scoring.
 
         Returns:
-            Updated (fused, chunks) tuple with graph neighbors included.
+            List of bonus SearchResult objects (may be empty).
         """
-        # Guard: no-op conditions
         if not self.config.graph_expansion_enabled:
-            return fused, chunks
-        if self.pack.graph is None:
-            return fused, chunks
-        if self._graph_lookup is None:
-            return fused, chunks
+            return []
+        if self.pack.graph is None or self._graph_lookup is None:
+            return []
 
         graph = self.pack.graph
         lookup = self._graph_lookup
-        discount = self.config.graph_expansion_discount
-        depth = self.config.graph_expansion_depth
-        graph_min_score = self.config.graph_expansion_min_score
+        confidence_threshold = self.config.graph_expansion_confidence_threshold
+        min_score = self.config.graph_expansion_min_score
+        structural_bonus = self.config.graph_expansion_structural_bonus
 
-        # Sort current candidates by score descending, take top max_results as seeds
-        sorted_candidates = sorted(fused.items(), key=lambda x: x[1], reverse=True)
-        seed_chunks = sorted_candidates[:max_results]
+        # Identify high-confidence seeds
+        seeds = [r for r in results if r.score >= confidence_threshold]
+        if not seeds:
+            return []
 
-        # Collect neighbor file paths across all depth levels
-        added_count = 0
-        existing_chunk_ids = set(fused.keys())
+        top_k_files = {r.source_file for r in results}
+        bonus: list[SearchResult] = []
+        seen_files: set[str] = set(top_k_files)
 
-        for chunk_id, parent_score in seed_chunks:
-            if added_count >= max_results:
-                break
+        for seed in seeds:
+            file_path = seed.source_file
+            neighbor_fps = lookup.get_neighbor_file_paths(file_path, graph)
 
-            chunk = chunks.get(chunk_id)
-            if not chunk:
-                continue
+            for n_fp in neighbor_fps:
+                if n_fp in seen_files:
+                    continue
 
-            file_path = chunk.get("file_path")
-            if not file_path:
-                continue
+                # Load primary chunk (chunk_index=0) for the neighbor file
+                neighbor_chunks_by_fp = self.store.get_chunks_by_file_paths([n_fp])
+                if not neighbor_chunks_by_fp or n_fp not in neighbor_chunks_by_fp:
+                    continue
 
-            # Multi-hop: BFS through the graph with visited tracking
-            visited_files: set[str] = {file_path}
-            current_level_files = {file_path}
-            current_discount = discount
+                fp_chunks = neighbor_chunks_by_fp[n_fp]
+                # Select primary chunk (chunk_index=0 preferred)
+                primary_chunk = next(
+                    (nc for nc in fp_chunks if nc.get("chunk_index", 0) == 0),
+                    None,
+                )
+                if not primary_chunk:
+                    continue
 
-            for hop in range(depth):
-                if added_count >= max_results:
-                    break
+                chunk_id = primary_chunk["id"]
 
-                next_level_files: set[str] = set()
-                for fp in current_level_files:
-                    neighbor_fps = lookup.get_neighbor_file_paths(fp, graph)
-                    next_level_files.update(neighbor_fps)
+                # Load neighbor embedding (primary chunk)
+                neighbor_embeddings = self._load_embeddings_for_chunks([chunk_id])
+                if chunk_id not in neighbor_embeddings:
+                    continue
 
-                # Remove all previously visited files (prevents cycles)
-                next_level_files -= visited_files
+                neighbor_emb = neighbor_embeddings[chunk_id]
 
-                if not next_level_files:
-                    break
+                # Independent cosine similarity (embeddings are normalized, dot = cosine)
+                cosine_sim = float(np.dot(query_embedding, neighbor_emb))
 
-                # Look up chunks for neighbor file paths
-                neighbor_chunks_by_fp = self.store.get_chunks_by_file_paths(
-                    list(next_level_files)
+                if cosine_sim < min_score:
+                    continue
+
+                final_score = cosine_sim * structural_bonus
+
+                tags = _parse_tags(primary_chunk.get("tags", "[]"))
+
+                bonus_result = SearchResult(
+                    text=primary_chunk["content"],
+                    source_file=primary_chunk.get("file_path", n_fp),
+                    id=primary_chunk.get("prov_id"),
+                    content_hash=primary_chunk.get("content_hash"),
+                    verified_at=primary_chunk.get("verified_at"),
+                    score=round(final_score, 4),
+                    type=primary_chunk.get("type"),
+                    tags=tags,
+                    chunk_index=primary_chunk.get("chunk_index", 0),
+                    title=primary_chunk.get("title"),
+                    graph_expanded=True,
                 )
 
-                for fp, fp_chunks in neighbor_chunks_by_fp.items():
-                    if added_count >= max_results:
-                        break
+                bonus.append(bonus_result)
+                seen_files.add(n_fp)
 
-                    neighbor_score = parent_score * current_discount
-                    if neighbor_score < graph_min_score:
-                        continue
-
-                    # Add only the primary chunk (lowest chunk_index) per neighbor file
-                    # to prevent oversized split files from flooding results
-                    best_chunk = min(
-                        (nc for nc in fp_chunks if nc["id"] not in existing_chunk_ids),
-                        key=lambda c: c.get("chunk_index", 0),
-                        default=None,
-                    )
-                    if best_chunk is None:
-                        continue
-
-                    nc_id = best_chunk["id"]
-                    fused[nc_id] = neighbor_score
-                    chunks[nc_id] = best_chunk
-                    existing_chunk_ids.add(nc_id)
-                    added_count += 1
-
-                # Next hop: deeper discount, advance frontier
-                visited_files.update(next_level_files)
-                current_level_files = next_level_files
-                current_discount *= discount
-
-        if added_count > 0:
+        if bonus:
             logger.debug(
-                "Graph expansion added %d neighbor chunks (depth=%d, discount=%.2f)",
-                added_count, depth, discount,
+                "Post-top-K graph expansion added %d bonus neighbor(s) from %d seed(s)",
+                len(bonus), len(seeds),
             )
 
-        return fused, chunks
+        return bonus
 
     def _load_embeddings_for_chunks(self, chunk_ids: list[int]) -> dict[int, list[float]]:
-        """Load embedding vectors for MMR calculation.
+        """Load embedding vectors for MMR or graph expansion scoring.
 
-        Reads directly from the vec table.
+        Reads directly from the vec table. Returns {chunk_id: embedding_list}.
         """
         embeddings: dict[int, list[float]] = {}
         for cid in chunk_ids:
