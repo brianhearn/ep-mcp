@@ -12,11 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ep_graph_traverse` MCP tool** — standalone graph exploration (depth 1-3, edge_kind filtering)
 - `GraphLookup` helper for bidirectional file_path ↔ node_id mapping
 - `SQLiteStore.get_chunks_by_file_paths()` for batch chunk lookup by file path
-- `RetrievalConfig` fields: `graph_expansion_enabled`, `graph_expansion_depth`, `graph_expansion_discount`
+- `RetrievalConfig` fields: `graph_expansion_enabled`, `graph_expansion_depth`, `graph_expansion_discount`, `graph_expansion_min_score`
 - 14 new unit tests for graph retrieval and traversal (76 total)
 
 ### Changed
+- Graph expansion discount default: 0.6 → 0.85 (justified by empirical data: graph edges avg 0.80 cosine vs 0.66 random pairs)
+- Graph expansion default: **disabled** — broad files (FAQ, overview) pull in irrelevant neighbors that displace correct direct search results via MMR diversity. Needs separate result tier or relevance gate before enabling.
+
 ### Fixed
+- Graph neighbor dedup: only add primary chunk (chunk_index=0) per neighbor file, preventing oversized split files from flooding results
+
 ### Removed
 
 ## [0.1.0] - 2026-04-11
