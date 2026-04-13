@@ -28,8 +28,8 @@ server:
   port: 8100
 
 packs:
-  - slug: "ezt-designer"
-    path: "/data/packs/ezt-designer"
+  - slug: "my-pack"
+    path: "/data/packs/my-pack"
     api_keys: ["key_abc123"]
 
 embedding:
@@ -46,7 +46,7 @@ retrieval:
         assert config.host == "0.0.0.0"
         assert config.port == 8100
         assert len(config.packs) == 1
-        assert config.packs[0].slug == "ezt-designer"
+        assert config.packs[0].slug == "my-pack"
         assert config.packs[0].api_keys == ["key_abc123"]
         assert config.embedding.provider == "gemini"
         assert config.retrieval.vector_weight == 0.7

@@ -12,9 +12,13 @@
 
 set -euo pipefail
 
-REMOTE_HOST="root@165.245.136.51"
-REMOTE_SRC="/opt/ep-mcp/ep_mcp"
-REMOTE_SITE_PKG="/opt/ep-mcp/.venv/lib/python3.12/site-packages/ep_mcp"
+REMOTE_HOST="${EP_MCP_REMOTE_HOST:-}"
+if [[ -z "$REMOTE_HOST" ]]; then
+  echo "Error: Set EP_MCP_REMOTE_HOST env var (e.g. root@your-server-ip)"
+  exit 1
+fi
+REMOTE_SRC="${EP_MCP_REMOTE_SRC:-/opt/ep-mcp/ep_mcp}"
+REMOTE_SITE_PKG="${EP_MCP_REMOTE_SITE_PKG:-/opt/ep-mcp/.venv/lib/python3.12/site-packages/ep_mcp}"
 LOCAL_SRC="$(cd "$(dirname "$0")/.." && pwd)/ep_mcp"
 
 RESTART_ONLY=false

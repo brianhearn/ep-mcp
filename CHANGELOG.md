@@ -53,15 +53,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Bumped `candidate_multiplier` from 4 to 8 for improved recall before MMR
-- Corrected embedding dimension handling (768 → 3072 for Gemini) and updated deployment target from EZT Help Bot to dedicated ExpertPack droplet (165.245.136.51)
+- Corrected embedding dimension handling (768 → 3072 for Gemini) and updated deployment target from help bot to dedicated ExpertPack droplet (production server)
 
 ### Fixed
 - Embedding dimension mismatch between index and runtime provider
 - Various request logging and error handling edge cases
 
 ### Evaluation
-- Achieved **90.9% retrieval hit rate** on 22-question benchmark against `ezt-designer` pack (845 chunks)
+- Achieved **90.9% retrieval hit rate** on 22-question benchmark against `my-pack` pack (845 chunks)
 
 **Initial release**: Vision → full working MCP server + production deployment in 3 days.
 
-[0.1.0]: https://github.com/brianhearn/ExpertPack_MCP/releases/tag/v0.1.0
+[0.1.0]: https://github.com/brianhearn/ep-mcp/releases/tag/v0.1.0

@@ -15,7 +15,7 @@ Decisions made before drafting, confirmed by Brian:
 |---|----------|--------|-----------|
 | 1 | SDK / Language | Python (FastMCP) | Retrieval stack is Python-native (embeddings, sqlite-vec, BM25). MCP Python SDK's FastMCP is mature with native Streamable HTTP support. |
 | 2 | Retrieval engine | Embedded SQLite (FTS5 + sqlite-vec) | No external database dependency. Same hybrid approach proven in help bot evals (84.8% correctness). Single-file, portable. |
-| 3 | Embedding provider | Configurable interface, Gemini default | Azure OpenAI as first-class provider for EZT production (Microsoft shop). Clean provider abstraction supports any backend. |
+| 3 | Embedding provider | Configurable interface, Gemini default | Azure OpenAI supported as first-class embedding provider. Clean provider abstraction supports any backend. |
 | 4 | Server structure | Modular (FastMCP + pack loader + index manager + retrieval engine) | Separation of concerns. Each module testable independently. |
 | 5 | Multi-pack routing | Path-based (`/packs/{slug}/mcp`) | Each pack gets its own Streamable HTTP endpoint, index, and resource namespace. Clean URL semantics. |
 
@@ -156,8 +156,8 @@ server:
   port: 8000
 
 packs:
-  - slug: "ezt-designer"
-    path: "/data/packs/ezt-designer"
+  - slug: "my-pack"
+    path: "/data/packs/my-pack"
     api_keys: ["key_abc123"]          # Per-pack auth (phase 1)
   - slug: "blender-3d"
     path: "/data/packs/blender-3d"
@@ -194,7 +194,7 @@ class PackFile:
     title: str | None          # From frontmatter or first H1
     type: str | None           # From frontmatter: concept, workflow, reference, etc.
     tags: list[str]            # From frontmatter
-    id: str | None             # Provenance ID (e.g., "ezt-designer/concepts/auto-build")
+    id: str | None             # Provenance ID (e.g., "my-pack/concepts/intro")
     content_hash: str | None   # SHA-256 of content (frontmatter stripped)
     verified_at: str | None    # ISO 8601 verification date
     verified_by: str | None    # "human" or "agent"
@@ -500,7 +500,7 @@ class EmbeddingProvider(ABC):
 | Provider | Class | Model | Dimensions | Notes |
 |----------|-------|-------|------------|-------|
 | Gemini | `GeminiEmbeddingProvider` | `gemini-embedding-001` | 3072 | Default for dev/testing. Same provider used in OpenClaw's RAG. |
-| Azure OpenAI | `AzureOpenAIEmbeddingProvider` | `text-embedding-3-small` | 1536 | EZT production path. Requires Azure endpoint + API key or Entra ID. Supports adjustable dimensions. |
+| Azure OpenAI | `AzureOpenAIEmbeddingProvider` | `text-embedding-3-small` | 1536 | Azure OpenAI embedding provider. Requires Azure endpoint + API key or Entra ID. Supports adjustable dimensions. |
 | Azure OpenAI | `AzureOpenAIEmbeddingProvider` | `text-embedding-3-large` | 3072 | Higher quality, higher cost. Adjustable down to 256 dims. |
 | OpenAI | `OpenAIEmbeddingProvider` | `text-embedding-3-small` | 1536 | Direct OpenAI API. Same models as Azure, different auth. |
 
@@ -620,8 +620,8 @@ async def ep_list_topics(
 ```json
 {
   "pack": {
-    "name": "EasyTerritory Designer",
-    "slug": "ezt-designer",
+    "name": "My Product",
+    "slug": "my-pack",
     "type": "product",
     "version": "2.0.0",
     "description": "...",
@@ -757,7 +757,7 @@ app = Starlette(routes=[
     # Pack listing
     Route("/packs", list_packs_endpoint),
     # Per-pack MCP endpoints
-    Mount("/packs/ezt-designer", app=ezt_mcp.streamable_http_app()),
+    Mount("/packs/my-pack", app=domain_mcp.streamable_http_app()),
     Mount("/packs/blender-3d", app=blender_mcp.streamable_http_app()),
 ])
 ```
@@ -768,14 +768,14 @@ For local development and testing. Launched as:
 
 ```bash
 # Single pack, stdio mode
-ep-mcp serve --pack /path/to/ezt-designer --transport stdio
+ep-mcp serve --pack /path/to/my-pack --transport stdio
 
 # Used in MCP client config:
 {
   "mcpServers": {
-    "ezt-designer": {
+    "my-pack": {
       "command": "ep-mcp",
-      "args": ["serve", "--pack", "/path/to/ezt-designer", "--transport", "stdio"]
+      "args": ["serve", "--pack", "/path/to/my-pack", "--transport", "stdio"]
     }
   }
 }
@@ -817,8 +817,8 @@ class APIKeyAuth:
 ### 9.4 Authentication — Phase 2 (OAuth 2.1, Future)
 
 Aligns with MCP spec's OAuth 2.1 with PKCE support. Enables:
-- SSO integration (Azure AD / Entra ID — natural for EZT customers)
-- Per-pack scopes (`ep:ezt-designer:read`, `ep:blender-3d:read`)
+- SSO integration (Azure AD / Entra ID — natural for enterprise SSO)
+- Per-pack scopes (`ep:my-pack:read`, `ep:blender-3d:read`)
 - Token-based access with expiry and refresh
 - Enterprise-managed auth policies
 
@@ -845,8 +845,8 @@ Configurable in server config. Default: restrictive (no open CORS).
 
 ### 10.1 MVP Deployment Target
 
-ExpertPack droplet (`165.245.136.51`):
-- Already hosts the `ezt-designer` pack (stripped, provenance backfilled)
+ExpertPack droplet (`your-server-ip`):
+- Already hosts your ExpertPack directory
 - Nginx reverse proxy available for TLS termination
 - Python 3.12+ available
 
@@ -868,7 +868,7 @@ Internet
 │                 │
 │  /health        │  → health check
 │  /packs         │  → pack listing
-│  /packs/ezt-designer/mcp  → MCP endpoint
+│  /packs/my-pack/mcp  → MCP endpoint
 └────────────────┘
 ```
 
@@ -905,7 +905,7 @@ OPENAI_API_KEY=...
 AZURE_OPENAI_ENDPOINT=https://myresource.openai.azure.com
 
 # Pack API keys (alternative to config file)
-EP_MCP_KEY_EZT_DESIGNER=key_abc123
+EP_MCP_KEY_MY_PACK=key_abc123
 
 # Server
 EP_MCP_HOST=0.0.0.0
@@ -934,7 +934,7 @@ Each module tested independently:
 
 ### 11.2 Integration Tests
 
-End-to-end tests using the `ezt-designer` pack:
+End-to-end tests using a real pack:
 
 1. **Load + index:** Load pack from disk, build full index, verify chunk/FTS/vec counts
 2. **Search quality:** Run known queries, verify expected files appear in top results
@@ -958,8 +958,8 @@ This ensures the MCP retrieval pipeline matches or exceeds the existing help bot
 # Unit tests
 pytest tests/unit/ -v
 
-# Integration tests (requires ezt-designer pack + embedding API key)
-pytest tests/integration/ -v --pack /path/to/ezt-designer
+# Integration tests (requires my-pack pack + embedding API key)
+pytest tests/integration/ -v --pack /path/to/my-pack
 
 # MCP protocol compliance
 pytest tests/mcp/ -v
@@ -1036,11 +1036,11 @@ ExpertPack MCP is **Layer 1** — the generic knowledge serving layer. Domain MC
 
 ```
 ┌─────────────────────────────────────────────┐
-│         EasyTerritory MCP (Layer 2)         │
+│         Domain MCP (Layer 2, example)         │
 │                                             │
 │  ┌───────────────────┐  ┌────────────────┐  │
-│  │  EP MCP (Layer 1) │  │  EZT Tools     │  │
-│  │  ezt-designer     │  │                │  │
+│  │  EP MCP (Layer 1) │  │  Domain Tools  │  │
+│  │  my-pack          │  │                │  │
 │  │  pack loaded      │  │  auto_build    │  │
 │  │                   │  │  create_terr   │  │
 │  │  ep_search        │  │  geocode       │  │
@@ -1049,19 +1049,19 @@ ExpertPack MCP is **Layer 1** — the generic knowledge serving layer. Domain MC
 └─────────────────────────────────────────────┘
 ```
 
-**Integration pattern:** The EZT MCP server imports `ep_mcp` as a library, loads the ezt-designer pack, and registers additional domain-specific tools alongside the EP tools. Same FastMCP instance, same transport, unified tool surface.
+**Integration pattern:** The Domain MCP server imports `ep_mcp` as a library, loads the my-pack pack, and registers additional domain-specific tools alongside the EP tools. Same FastMCP instance, same transport, unified tool surface.
 
 ```python
 from ep_mcp import create_pack_server
-from ezt_mcp.tools import register_ezt_tools
+from domain_mcp.tools import register_domain_tools
 
-# Create EP MCP server with ezt-designer pack
-server = create_pack_server(pack_path="/data/packs/ezt-designer")
+# Create EP MCP server with my-pack pack
+server = create_pack_server(pack_path="/data/packs/my-pack")
 
 # Register domain-specific tools on the same server
-register_ezt_tools(server, api_config=ezt_cloud_config)
+register_domain_tools(server, api_config=domain_config)
 
-# Serve — agents see both EP tools and EZT tools
+# Serve — agents see both EP tools and domain tools
 server.run(transport="streamable-http")
 ```
 
@@ -1074,7 +1074,7 @@ This is the architectural boundary: EP MCP provides knowledge, domain MCP provid
 1. ✅ Vision (VISION.md v0.3)
 2. ✅ Architecture (this document)
 3. ⬜ Implementation — start with pack loader + indexer + ep_search, then transport + auth
-4. ⬜ Validation — integration tests against ezt-designer, eval alignment
+4. ⬜ Validation — integration tests against my-pack, eval alignment
 5. ⬜ Deploy — ExpertPack droplet, nginx reverse proxy, systemd
-6. ⬜ EasyTerritory MCP — domain tools layer
+6. ⬜ Domain MCP example — domain tools layer
 

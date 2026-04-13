@@ -36,8 +36,8 @@ type: product
 
     def test_valid_full(self, tmp_dir):
         path = _write_manifest(tmp_dir, """
-slug: ezt-designer
-name: EasyTerritory Designer
+slug: my-pack
+name: My Product
 type: product
 version: "2.0.0"
 description: Territory planning tool
@@ -55,7 +55,7 @@ freshness:
   last_full_review: "2026-04-10"
 """)
         m = parse_manifest(path)
-        assert m.slug == "ezt-designer"
+        assert m.slug == "my-pack"
         assert m.type == "product"
         assert m.version == "2.0.0"
         assert m.schema_version == "3.1"

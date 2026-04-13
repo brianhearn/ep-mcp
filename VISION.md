@@ -2,7 +2,7 @@
 
 **Version:** 0.3 (Draft)
 **Date:** 2026-04-11
-**Authors:** Brian Hearn, EasyBot
+**Author:** Brian Hearn
 
 ---
 
@@ -62,7 +62,7 @@ ExpertPack MCP serves structured domain expertise over the Model Context Protoco
 - **Provenance** — every chunk carries `id`, `content_hash`, `verified_at`, `verified_by`. Agents can cite sources properly and consumers can verify claims.
 - **Graph-aware retrieval** — EP's `_graph.yaml` adjacency layer means related content follows wikilinks and structural relationships, not just embedding similarity.
 - **EP-native chunking** — files are authored as retrieval units (schema-as-chunker). No lossy post-hoc splitting that breaks context.
-- **Pack portability** — same server, different pack, different domain. Swap `ezt-designer` for `blender-3d` and you have a different expertise service running.
+- **Pack portability** — same server, different pack, different domain. Swap `my-pack` for `blender-3d` and you have a different expertise service running.
 - **Freshness as a feature** — provenance metadata and manifest-level freshness SLAs mean the agent (and the user) know how current the knowledge is.
 
 ---
@@ -86,9 +86,9 @@ The open-source core. Loads any valid ExpertPack and exposes it over MCP.
 
 Built on top of ExpertPack MCP. Loads a specific pack and adds domain tools.
 
-**Example: EasyTerritory MCP**
-- Loads the `ezt-designer` ExpertPack for RAG (territory planning expertise)
-- Adds EZT Cloud API tools: `auto_build_territories`, `create_territory`, `geocode_accounts`, `cluster_locations`, etc.
+**Example: Acme Product MCP**
+- Loads the `acme-product` ExpertPack for RAG (product configuration expertise)
+- Adds Acme Cloud API tools: `configure_product`, `create_order`, `get_recommendations`, etc.
 - The agent uses RAG to reason about *what* to do, then tools to *do* it
 
 **The conversation arc:**
@@ -103,7 +103,7 @@ Agent → User: "Should these be polygon-based (ZIP/county) or account clusters?
 User: "Clusters, balanced by revenue"
 
 Agent → EP MCP (RAG): retrieves auto-build best practices, balance metrics
-Agent → EZT MCP (Tool): auto_build_territories({
+Agent → Acme MCP (Tool): configure_product({
     method: "cluster", count: 10, balance: "revenue", ...
 })
 
@@ -119,10 +119,10 @@ This is what separates an expert agent from a dumb API client. The EK is what ma
 ## User Tiers
 
 ### Tier 1 — Internal Agents (Primary, MVP)
-Companies building agents powered by their own proprietary expertise. EasyTerritory building an agent that plans territories using the ezt-designer EP. A medical device company building an agent that configures equipment using their internal EP.
+Companies building agents powered by their own proprietary expertise. A software company building an agent that configures products using the acme-product EP. A medical device company building an agent that configures equipment using their internal EP.
 
 ### Tier 2 — Customer-Facing Expertise Services
-Companies exposing their domain expertise as a service to their customers' agents. EasyTerritory customers connect their planning agents to the EZT EP MCP endpoint. The expertise becomes part of the product offering.
+Companies exposing their domain expertise as a service to their customers' agents. Companies expose their domain expertise as a service to their customers' agents. The expertise becomes part of the product offering.
 
 ### Tier 3 — Expertise Marketplace (Future)
 A registry of EP MCP servers — discoverable expertise endpoints. Developers publish packs, they become live services. Agents discover and connect to the expertise they need dynamically.
@@ -167,7 +167,7 @@ A registry of EP MCP servers — discoverable expertise endpoints. Developers pu
 **Retrieval pipeline:** Hybrid (vector embeddings + BM25 keyword), same proven approach as help bot eval (84.8% correctness, Run 12 baseline).
 
 ### Out of Scope (MVP)
-- Domain-specific tools (that's the EZT MCP layer, not this repo)
+- Domain-specific tools (that's the Domain MCP layer, not this repo)
 - Prompts primitive (roadmap — informed by real usage patterns)
 - Marketplace / registry integration
 - Graph traversal tool (valuable but not MVP-critical)
@@ -175,7 +175,7 @@ A registry of EP MCP servers — discoverable expertise endpoints. Developers pu
 
 ### MVP Success Criteria
 1. Server runs as a cloud-hosted Streamable HTTP endpoint
-2. Load the `ezt-designer` pack
+2. Load a real production ExpertPack
 3. Send MCP-compliant search queries over HTTP and receive expert answers
 4. **Retrieval quality matches or exceeds help bot eval baselines** (84.8% correctness, ≤13% hallucination — Run 12 baseline, Sonnet judge)
 5. Provenance metadata (id, content_hash, verified_at) included in all responses
@@ -238,7 +238,7 @@ Designed from day one:
 | ExpertPack packs (`ExpertPacks` repo) | The actual knowledge — what powers specific expertise services |
 | EP tooling (`ep-validate`, `ep-graph-export`, etc.) | Pack authoring & validation — ensures quality of what gets served |
 | **ExpertPack MCP (this repo)** | **The serving layer — turns a pack into a live expertise service** |
-| EasyTerritory MCP (future) | Domain extension — adds EZT tools on top of EP MCP + ezt-designer pack |
+| Domain MCP (example) | Domain extension — adds domain-specific tools on top of EP MCP + a domain pack |
 | ClawHub `expertpack` skill | OpenClaw-specific skill for working with EPs — complementary, not replaced |
 
 ---
@@ -246,14 +246,14 @@ Designed from day one:
 ## Testing Strategy
 
 ### Deployment Target
-EZT Help Bot droplet (`64.225.0.26`) — already hosts the ezt-designer pack and has the infrastructure in place. EP MCP server will run alongside (or replace) the existing help bot.
+Your server — with your ExpertPack directory already in place.
 
 ### Primary: Direct HTTP Testing
 Streamable HTTP is standard HTTP — testable directly without a UI host:
 - **curl / Python requests** — raw JSON-RPC calls to validate protocol compliance
 - **MCP Python client SDK** — full protocol simulation (capability negotiation, initialization handshake, tool calls)
 - **Automated integration tests** — load pack, run search queries, validate retrieval quality against known-good answers
-- Tests run from EasyBot droplet (`129.212.189.28`) against the help bot droplet
+- Tests run from a client machine against the server
 
 ### Secondary: MCP Host Testing
 - **Claude.ai (web)** — supports connecting to remote MCP servers over Streamable HTTP. Visual demo surface for human testing.
@@ -278,5 +278,5 @@ Streamable HTTP is standard HTTP — testable directly without a UI host:
 1. ✅ Vision (this document)
 2. ⬜ Architecture — server structure, SDK choice, retrieval pipeline design, resource/tool schemas, transport details
 3. ⬜ Implementation — MVP build
-4. ⬜ Validation — end-to-end HTTP testing with ezt-designer pack, then Claude.ai demo
-5. ⬜ EasyTerritory MCP — domain layer with EZT Cloud API tools
+4. ⬜ Validation — end-to-end HTTP testing with a real pack, then Claude.ai demo
+5. ⬜ Domain MCP example — domain tools layer built on top of EP MCP
