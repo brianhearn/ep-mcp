@@ -78,6 +78,7 @@ def serve(config_path: str, transport: str) -> None:
     click.echo("Endpoints:")
     click.echo(f"  GET  /health")
     click.echo(f"  GET  /packs")
+    click.echo(f"  GET  /search?q=<query>&pack=<slug>&n=<max_results>")
     for p in config.packs:
         click.echo(f"  POST /packs/{p.slug}/mcp")
 

@@ -272,9 +272,57 @@ def build_app(config: ServerConfig, pack_instances: dict[str, PackInstance]) -> 
             })
         return JSONResponse({"packs": packs})
 
+    async def search(request: Request) -> JSONResponse:
+        """GET /search?q=<query>&pack=<slug>&n=<max_results>&type=<type>&tags=<tag1,tag2>
+
+        Lightweight HTTP search endpoint for non-MCP clients (e.g. web_fetch, curl).
+        Requires Bearer token if API keys are configured for the pack.
+        """
+        q = request.query_params.get("q", "").strip()
+        slug = request.query_params.get("pack", "").strip()
+        n = int(request.query_params.get("n", "10"))
+        type_filter = request.query_params.get("type", None)
+        tags_raw = request.query_params.get("tags", None)
+        tags = [t.strip() for t in tags_raw.split(",") if t.strip()] if tags_raw else None
+
+        if not q:
+            return JSONResponse({"error": "Missing required parameter: q"}, status_code=400)
+        if not slug:
+            return JSONResponse({"error": "Missing required parameter: pack"}, status_code=400)
+        if slug not in pack_instances:
+            return JSONResponse({"error": f"Unknown pack: {slug}"}, status_code=404)
+
+        # Auth check
+        auth_header = request.headers.get("Authorization", "")
+        if not auth.authenticate(auth_header, slug):
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        try:
+            engine = pack_instances[slug].engine
+            results = await ep_search(engine, q, type_filter, tags, n)
+            return JSONResponse({
+                "query": q,
+                "pack": slug,
+                "results": [
+                    {
+                        "source_file": r["source_file"],
+                        "title": r["title"],
+                        "text": r["text"],
+                        "score": round(r["score"], 4),
+                        "type": r["type"],
+                        "tags": r["tags"],
+                    }
+                    for r in results
+                ],
+            })
+        except Exception as exc:
+            logger.exception("search endpoint error | pack=%s query=%r", slug, q)
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
     routes = [
         Route("/health", health),
         Route("/packs", list_packs),
+        Route("/search", search),
     ]
 
     for slug, sm, mcp_app in session_managers:

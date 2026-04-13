@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`GET /search` endpoint** — lightweight HTTP search for non-MCP clients (web_fetch, curl, etc.). Query params: `q`, `pack`, `n`, `type`, `tags`. Requires Bearer token when API keys are configured for the pack. Returns `source_file`, `title`, `text`, `score`, `type`, `tags` per result.
 - **`scripts/deploy.sh`** — rsync-based deploy script that copies `ep_mcp/` source directly to both `/opt/ep-mcp/ep_mcp/` and site-packages on the ExpertPack droplet. Replaces the previous tar+pip install pattern which corrupted entrypoint shebangs (shebang was rewritten to EasyBot's local venv path). Supports `--restart-only` flag for service restarts without file copy.
 - **Graph expansion logging** — INFO-level log lines per query: seeds selected (with threshold), total neighbor candidates evaluated, bonus results appended with file paths. DEBUG-level log for each rejected neighbor with cosine score. Provides full per-query visibility for threshold tuning.
 
