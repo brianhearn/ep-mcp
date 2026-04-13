@@ -6,7 +6,7 @@ An MCP server that turns any ExpertPack into a live, queryable knowledge service
 
 **[🌐 expertpack.ai](https://expertpack.ai)** · **[📦 ExpertPack Framework](https://github.com/brianhearn/ExpertPack)** · **[📖 Architecture](ARCHITECTURE.md)**
 
->95.5% retrieval hit rate on a 22-question benchmark against a real production pack (826 chunks). A live instance runs at [expertpack.ai/mcp](https://expertpack.ai/mcp).
+>95.5% retrieval hit rate on a 22-question benchmark against a real production pack (826 chunks).
 
 ## Features
 
