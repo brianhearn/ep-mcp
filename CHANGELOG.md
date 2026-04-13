@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Graph expansion logging** — INFO-level log lines per query: seeds selected (with threshold), total neighbor candidates evaluated, bonus results appended with file paths. DEBUG-level log for each rejected neighbor with cosine score. Provides full per-query visibility for threshold tuning.
+
+### Added (previous)
 - **Graph-aware retrieval** in `ep_search` — additive post-top-K expansion; neighbors scored independently against query embedding (cosine similarity), appended as bonus results with `graph_expanded=True` flag; does not interfere with core top-K selection
 - **`ep_graph_traverse` MCP tool** — standalone graph exploration (depth 1-3, edge_kind filtering)
 - `GraphLookup` helper for bidirectional file_path ↔ node_id mapping

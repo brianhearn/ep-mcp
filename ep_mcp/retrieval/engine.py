@@ -206,6 +206,10 @@ class RetrievalEngine:
 
         # Identify high-confidence seeds
         seeds = [r for r in results if r.score >= confidence_threshold]
+        logger.info(
+            "graph_expansion | seeds=%d/%d (threshold=%.2f)",
+            len(seeds), len(results), confidence_threshold,
+        )
         if not seeds:
             return []
 
@@ -213,6 +217,7 @@ class RetrievalEngine:
         bonus: list[SearchResult] = []
         seen_files: set[str] = set(top_k_files)
 
+        total_candidates = 0
         for seed in seeds:
             file_path = seed.source_file
             neighbor_fps = lookup.get_neighbor_file_paths(file_path, graph)
@@ -220,6 +225,8 @@ class RetrievalEngine:
             for n_fp in neighbor_fps:
                 if n_fp in seen_files:
                     continue
+
+                total_candidates += 1
 
                 # Load primary chunk (chunk_index=0) for the neighbor file
                 neighbor_chunks_by_fp = self.store.get_chunks_by_file_paths([n_fp])
@@ -248,6 +255,10 @@ class RetrievalEngine:
                 cosine_sim = float(np.dot(query_embedding, neighbor_emb))
 
                 if cosine_sim < min_score:
+                    logger.debug(
+                        "graph_expansion | neighbor '%s' rejected (cosine=%.4f < min_score=%.2f)",
+                        n_fp, cosine_sim, min_score,
+                    )
                     continue
 
                 final_score = cosine_sim * structural_bonus
@@ -271,11 +282,11 @@ class RetrievalEngine:
                 bonus.append(bonus_result)
                 seen_files.add(n_fp)
 
-        if bonus:
-            logger.debug(
-                "Post-top-K graph expansion added %d bonus neighbor(s) from %d seed(s)",
-                len(bonus), len(seeds),
-            )
+        bonus_files = [r.source_file for r in bonus]
+        logger.info(
+            "graph_expansion | candidates=%d bonus=%d bonus_files=%s",
+            total_candidates, len(bonus), bonus_files,
+        )
 
         return bonus
 
