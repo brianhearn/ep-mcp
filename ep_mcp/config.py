@@ -15,6 +15,12 @@ class PackConfig(BaseModel):
     path: str
     api_keys: list[str] = Field(default_factory=list)
 
+    # Optional pack-level overrides for graph expansion (fall back to RetrievalConfig globals)
+    graph_expansion_enabled: bool | None = None
+    graph_expansion_confidence_threshold: float | None = None
+    graph_expansion_min_score: float | None = None
+    graph_expansion_structural_bonus: float | None = None
+
 
 class EmbeddingConfig(BaseModel):
     """Embedding provider configuration."""

@@ -65,7 +65,12 @@ class RetrievalEngine:
         # Graph lookup for file_path ↔ node_id mapping
         self._graph_lookup = graph_lookup or GraphLookup.from_pack(pack)
 
-    async def search(self, request: SearchRequest) -> list[SearchResult]:
+    async def search(
+        self,
+        request: SearchRequest,
+        graph_expansion_confidence_threshold: float | None = None,
+        graph_expansion_min_score: float | None = None,
+    ) -> list[SearchResult]:
         """Execute a hybrid search against the pack index.
 
         Args:
@@ -166,6 +171,8 @@ class RetrievalEngine:
         bonus_results = self._apply_graph_expansion(
             results=top_k_results,
             query_embedding=query_embedding,
+            confidence_threshold_override=graph_expansion_confidence_threshold,
+            min_score_override=graph_expansion_min_score,
         )
 
         # Combine: top-K + bonus neighbors (bonus come after)
@@ -175,6 +182,8 @@ class RetrievalEngine:
         self,
         results: list[SearchResult],
         query_embedding: list[float],
+        confidence_threshold_override: float | None = None,
+        min_score_override: float | None = None,
     ) -> list[SearchResult]:
         """Additive post-top-K graph expansion.
 
@@ -200,8 +209,16 @@ class RetrievalEngine:
 
         graph = self.pack.graph
         lookup = self._graph_lookup
-        confidence_threshold = self.config.graph_expansion_confidence_threshold
-        min_score = self.config.graph_expansion_min_score
+        confidence_threshold = (
+            confidence_threshold_override
+            if confidence_threshold_override is not None
+            else self.config.graph_expansion_confidence_threshold
+        )
+        min_score = (
+            min_score_override
+            if min_score_override is not None
+            else self.config.graph_expansion_min_score
+        )
         structural_bonus = self.config.graph_expansion_structural_bonus
 
         # Identify high-confidence seeds

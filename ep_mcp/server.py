@@ -215,7 +215,25 @@ async def init_pack(
     logger.info("Pack '%s' indexed: %s", slug, stats)
 
     graph_lookup = GraphLookup.from_pack(pack)
-    engine = RetrievalEngine(pack, store, provider, config.retrieval, graph_lookup)
+
+    # Build effective retrieval config: start with global, apply pack-level overrides
+    pack_cfg = next((p for p in config.packs if p.slug == slug), None)
+    retrieval_cfg = config.retrieval
+    if pack_cfg is not None:
+        overrides = {}
+        if pack_cfg.graph_expansion_enabled is not None:
+            overrides["graph_expansion_enabled"] = pack_cfg.graph_expansion_enabled
+        if pack_cfg.graph_expansion_confidence_threshold is not None:
+            overrides["graph_expansion_confidence_threshold"] = pack_cfg.graph_expansion_confidence_threshold
+        if pack_cfg.graph_expansion_min_score is not None:
+            overrides["graph_expansion_min_score"] = pack_cfg.graph_expansion_min_score
+        if pack_cfg.graph_expansion_structural_bonus is not None:
+            overrides["graph_expansion_structural_bonus"] = pack_cfg.graph_expansion_structural_bonus
+        if overrides:
+            retrieval_cfg = retrieval_cfg.model_copy(update=overrides)
+            logger.info("Pack '%s' applying retrieval overrides: %s", slug, overrides)
+
+    engine = RetrievalEngine(pack, store, provider, retrieval_cfg, graph_lookup)
     mcp = create_pack_mcp(slug, pack, engine, graph_lookup)
 
     return PackInstance(pack=pack, store=store, engine=engine, mcp=mcp)
@@ -277,6 +295,10 @@ def build_app(config: ServerConfig, pack_instances: dict[str, PackInstance]) -> 
 
         Lightweight HTTP search endpoint for non-MCP clients (e.g. web_fetch, curl).
         Requires Bearer token if API keys are configured for the pack.
+
+        Tuning overrides (optional, for eval/tuning only — not for production use):
+          graph_expansion_confidence_threshold=<float>
+          graph_expansion_min_score=<float>
         """
         q = request.query_params.get("q", "").strip()
         slug = request.query_params.get("pack", "").strip()
@@ -284,6 +306,12 @@ def build_app(config: ServerConfig, pack_instances: dict[str, PackInstance]) -> 
         type_filter = request.query_params.get("type", None)
         tags_raw = request.query_params.get("tags", None)
         tags = [t.strip() for t in tags_raw.split(",") if t.strip()] if tags_raw else None
+
+        # Optional tuning overrides
+        conf_raw = request.query_params.get("graph_expansion_confidence_threshold", None)
+        min_raw = request.query_params.get("graph_expansion_min_score", None)
+        conf_override = float(conf_raw) if conf_raw is not None else None
+        min_override = float(min_raw) if min_raw is not None else None
 
         if not q:
             return JSONResponse({"error": "Missing required parameter: q"}, status_code=400)
@@ -299,20 +327,27 @@ def build_app(config: ServerConfig, pack_instances: dict[str, PackInstance]) -> 
 
         try:
             engine = pack_instances[slug].engine
-            results = await ep_search(engine, q, type_filter, tags, n)
+            from .retrieval.models import SearchRequest
+            search_req = SearchRequest(query=q, type=type_filter, tags=tags, max_results=n)
+            raw_results = await engine.search(
+                search_req,
+                graph_expansion_confidence_threshold=conf_override,
+                graph_expansion_min_score=min_override,
+            )
             return JSONResponse({
                 "query": q,
                 "pack": slug,
                 "results": [
                     {
-                        "source_file": r["source_file"],
-                        "title": r["title"],
-                        "text": r["text"],
-                        "score": round(r["score"], 4),
-                        "type": r["type"],
-                        "tags": r["tags"],
+                        "source_file": r.source_file,
+                        "title": r.title,
+                        "text": r.text,
+                        "score": round(r.score, 4),
+                        "type": r.type,
+                        "tags": r.tags,
+                        "graph_expanded": r.graph_expanded,
                     }
-                    for r in results
+                    for r in raw_results
                 ],
             })
         except Exception as exc:
