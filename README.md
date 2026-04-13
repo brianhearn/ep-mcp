@@ -4,7 +4,9 @@
 
 An MCP server that turns any ExpertPack into a live, queryable knowledge service. Any MCP-compatible agent (Claude Desktop, Cursor, Windsurf, Claude.ai, custom hosts) can connect and retrieve high-quality, provenance-rich domain expertise via standardized tools.
 
->95% retrieval hit rate on a 22-question benchmark against a real production pack (850 chunks).
+**[🌐 expertpack.ai](https://expertpack.ai)** · **[📦 ExpertPack Framework](https://github.com/brianhearn/ExpertPack)** · **[📖 Architecture](ARCHITECTURE.md)**
+
+>95.5% retrieval hit rate on a 22-question benchmark against a real production pack (826 chunks). A live instance runs at [expertpack.ai/mcp](https://expertpack.ai/mcp).
 
 ## Features
 
@@ -121,10 +123,12 @@ See `pyproject.toml` for exact dependencies.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed module breakdown, retrieval pipeline, indexing strategy, and design decisions.
 
-## Related Repositories
+## Related
 
-- [ExpertPack](https://github.com/brianhearn/ExpertPack) — schema, tools, Obsidian compat
-- [ExpertPacks](https://github.com/brianhearn/ExpertPacks) — published knowledge packs (private)
+- **[expertpack.ai](https://expertpack.ai)** — Framework website, community packs, and documentation
+- **[ExpertPack](https://github.com/brianhearn/ExpertPack)** — Schema framework, validation tools, Obsidian compatibility, community packs
+- **[ExpertPacks](https://github.com/brianhearn/ExpertPacks)** — Published knowledge packs (private)
+- **EasyTerritory MCP** (future) — Domain-specific layer built on top of this repo + `ezt-designer` pack
 
 ## License
 
