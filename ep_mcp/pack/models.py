@@ -48,18 +48,54 @@ class ContextTiers(BaseModel):
     on_demand: list[str] = Field(default_factory=list)
 
 
+# --- MCP configuration models (defined before Manifest so Manifest can reference them) ---
+
+class MCPPromptDeclaration(BaseModel):
+    """A single prompt declared in manifest mcp.prompts."""
+
+    name: str = Field(description="Snake_case prompt name exposed to MCP clients")
+    description: str = Field(description="One-line description shown during registration")
+    source: str = Field(description="Relative path to the workflow file")
+
+
+class MCPResourcesConfig(BaseModel):
+    """Resources sub-config from manifest mcp.resources."""
+
+    include_always_tier: bool = Field(
+        True, description="Expose context.always files as MCP Resources"
+    )
+    additional: list[str] = Field(
+        default_factory=list, description="Extra files to expose beyond always tier"
+    )
+
+
+class MCPConfig(BaseModel):
+    """Parsed mcp block from manifest.yaml."""
+
+    instructions: str | None = Field(
+        None, description="Server instructions= string for MCP registration"
+    )
+    prompts: list[MCPPromptDeclaration] = Field(
+        default_factory=list, description="Explicit prompt declarations"
+    )
+    resources: MCPResourcesConfig = Field(default_factory=MCPResourcesConfig)
+
+
+# --- Manifest ---
+
 class Manifest(BaseModel):
     """Parsed manifest.yaml for an ExpertPack."""
 
     slug: str
     name: str
-    type: str = Field(description="person | product | process")
+    type: str = Field(description="person | product | process | composite")
     version: str = "1.0.0"
     description: str = ""
     entry_point: str = "overview.md"
     schema_version: str = ""
     context: ContextTiers = Field(default_factory=ContextTiers)
     freshness: FreshnessMetadata = Field(default_factory=FreshnessMetadata)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
     raw: dict = Field(default_factory=dict, description="Full parsed YAML for passthrough")
 
 
@@ -96,13 +132,17 @@ class Pack(BaseModel):
 
     slug: str
     name: str
-    type: str = Field(description="person | product | process")
+    type: str = Field(description="person | product | process | composite")
     version: str
     description: str = ""
     entry_point: str = "overview.md"
-    files: dict[str, PackFile] = Field(default_factory=dict, description="path → PackFile")
+    files: dict[str, PackFile] = Field(default_factory=dict, description="path -> PackFile")
     manifest: Manifest
     graph: PackGraph | None = None
     freshness: FreshnessMetadata | None = None
+    mcp_config: MCPConfig = Field(default_factory=MCPConfig)
+    always_tier: list[str] = Field(
+        default_factory=list, description="Resolved file paths in context.always tier"
+    )
     index_path: str = Field("", description="Path to SQLite index file")
     pack_dir: str = Field("", description="Absolute path to pack directory")

@@ -79,6 +79,9 @@ def load_pack(pack_dir: str | Path, slug_override: str | None = None) -> Pack:
     index_dir = pack_path / ".ep-mcp"
     index_path = str(index_dir / "index.db")
 
+    # Resolve always-tier file paths
+    always_tier = _resolve_always_tier(manifest.context.always, files, pack_path)
+
     return Pack(
         slug=slug,
         name=manifest.name,
@@ -90,6 +93,8 @@ def load_pack(pack_dir: str | Path, slug_override: str | None = None) -> Pack:
         manifest=manifest,
         graph=graph,
         freshness=manifest.freshness,
+        mcp_config=manifest.mcp,
+        always_tier=always_tier,
         index_path=index_path,
         pack_dir=str(pack_path),
     )
@@ -206,6 +211,28 @@ def _ensure_list(value: object) -> list[str]:
     if isinstance(value, list):
         return [str(v) for v in value]
     return []
+
+
+def _resolve_always_tier(always_paths: list[str], files: dict, pack_path: Path) -> list[str]:
+    """Resolve always-tier path declarations to actual file paths.
+
+    Supports both direct file paths and directory paths (trailing /).
+    Returns sorted list of resolved file paths present in the pack.
+    """
+    resolved = []
+    for declared in always_paths:
+        if declared.endswith("/"):
+            # Directory glob — include all files under this directory
+            prefix = declared.rstrip("/")
+            for file_path in files:
+                if file_path.startswith(prefix + "/"):
+                    resolved.append(file_path)
+        else:
+            if declared in files:
+                resolved.append(declared)
+            else:
+                logger.debug("always-tier path not found in pack: %s", declared)
+    return sorted(set(resolved))
 
 
 def _load_graph(pack_path: Path) -> PackGraph | None:

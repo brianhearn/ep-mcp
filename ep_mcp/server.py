@@ -23,6 +23,8 @@ from .pack.loader import load_pack
 from .pack.models import Pack
 from .retrieval.engine import RetrievalEngine
 from .retrieval.graph_helpers import GraphLookup
+from .prompts.pack_prompts import register_prompts
+from .resources.pack_resources import register_resources
 from .tools.ep_graph_traverse import ep_graph_traverse
 from .tools.ep_list_topics import ep_list_topics
 from .tools.ep_search import ep_search
@@ -48,20 +50,34 @@ def create_embedding_provider(config: ServerConfig) -> EmbeddingProvider:
     raise ValueError(f"Unsupported embedding provider: {emb.provider}")
 
 
+def _get_server_instructions(pack: Pack) -> str:
+    """Derive the MCP server instructions string for a pack.
+
+    Priority: mcp.instructions in manifest > manifest.description > generic fallback.
+    """
+    if pack.mcp_config.instructions:
+        return pack.mcp_config.instructions
+    if pack.description:
+        return pack.description
+    return (
+        f"{pack.name} ExpertPack knowledge service. "
+        f"Use ep_search to find domain expertise, ep_list_topics to browse pack structure, "
+        f"and ep_graph_traverse to explore knowledge graph connections."
+    )
+
+
 def create_pack_mcp(
     slug: str,
     pack: Pack,
     engine: RetrievalEngine,
     graph_lookup: GraphLookup | None = None,
 ):
-    """Create a FastMCP instance with tools registered for a pack."""
+    """Create a FastMCP instance with tools, resources, and prompts registered for a pack."""
     from mcp.server.fastmcp import FastMCP
 
     mcp = FastMCP(
         name=f"ep-mcp-{slug}",
-        instructions=f"ExpertPack MCP server for {pack.name}. "
-        f"Use ep_search to find domain expertise, ep_list_topics to browse pack structure, "
-        f"and ep_graph_traverse to explore knowledge graph connections.",
+        instructions=_get_server_instructions(pack),
         stateless_http=True,
     )
 
@@ -176,25 +192,11 @@ def create_pack_mcp(
                 "file_path": file_path,
             })
 
-    @mcp.resource(f"ep://{slug}/manifest")
-    async def get_manifest() -> str:
-        """Get the pack's manifest.yaml as JSON."""
-        return json.dumps(pack.manifest.raw, indent=2, default=str)
+    # Register resources (always-tier files, overview, manifest, additional declared)
+    register_resources(mcp, pack)
 
-    @mcp.resource(f"ep://{slug}/files")
-    async def get_file_listing() -> str:
-        """Get the pack's file listing with metadata."""
-        files = []
-        for path, f in sorted(pack.files.items()):
-            files.append({
-                "path": path,
-                "title": f.title,
-                "type": f.type,
-                "tags": f.tags,
-                "tokens": f.size_tokens,
-                "has_provenance": f.provenance.id is not None,
-            })
-        return json.dumps(files, indent=2)
+    # Register prompts (from mcp.prompts manifest declarations or auto-discovered workflows)
+    register_prompts(mcp, pack)
 
     return mcp
 

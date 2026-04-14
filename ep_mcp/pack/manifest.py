@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from .models import ContextTiers, FreshnessMetadata, Manifest
+from .models import ContextTiers, FreshnessMetadata, Manifest, MCPConfig, MCPPromptDeclaration, MCPResourcesConfig
 
 
 class ManifestError(Exception):
@@ -42,9 +42,9 @@ def parse_manifest(manifest_path: Path) -> Manifest:
             raise ManifestError(f"Missing required field '{field}' in manifest.yaml")
 
     pack_type = raw["type"]
-    if pack_type not in ("person", "product", "process"):
+    if pack_type not in ("person", "product", "process", "composite"):
         raise ManifestError(
-            f"Invalid pack type '{pack_type}' — must be person, product, or process"
+            f"Invalid pack type '{pack_type}' — must be person, product, process, or composite"
         )
 
     # Parse context tiers
@@ -63,6 +63,10 @@ def parse_manifest(manifest_path: Path) -> Manifest:
         decay_rate=freshness_raw.get("decay_rate"),
     )
 
+    # Parse mcp block
+    mcp_raw = raw.get("mcp", {})
+    mcp_config = _parse_mcp_config(mcp_raw)
+
     return Manifest(
         slug=raw["slug"],
         name=raw["name"],
@@ -73,7 +77,55 @@ def parse_manifest(manifest_path: Path) -> Manifest:
         schema_version=str(raw.get("schema_version", "")),
         context=context,
         freshness=freshness,
+        mcp=mcp_config,
         raw=raw,
+    )
+
+
+def _parse_mcp_config(mcp_raw: dict) -> MCPConfig:
+    """Parse the mcp block from manifest.yaml into an MCPConfig model."""
+    if not isinstance(mcp_raw, dict):
+        return MCPConfig()
+
+    # Parse instructions
+    instructions = mcp_raw.get("instructions")
+    if instructions is not None:
+        instructions = str(instructions).strip()
+        if len(instructions) > 500:
+            import logging
+            logging.getLogger(__name__).warning(
+                "W-MCP-03: mcp.instructions exceeds 500 characters (%d chars) — consider trimming",
+                len(instructions),
+            )
+
+    # Parse prompts
+    prompts_raw = mcp_raw.get("prompts", [])
+    prompts = []
+    if isinstance(prompts_raw, list):
+        for p in prompts_raw:
+            if not isinstance(p, dict):
+                continue
+            if not p.get("name") or not p.get("source"):
+                continue
+            prompts.append(MCPPromptDeclaration(
+                name=str(p["name"]),
+                description=str(p.get("description", "")),
+                source=str(p["source"]),
+            ))
+
+    # Parse resources
+    resources_raw = mcp_raw.get("resources", {})
+    if not isinstance(resources_raw, dict):
+        resources_raw = {}
+    resources = MCPResourcesConfig(
+        include_always_tier=bool(resources_raw.get("include_always_tier", True)),
+        additional=_ensure_list(resources_raw.get("additional", [])),
+    )
+
+    return MCPConfig(
+        instructions=instructions,
+        prompts=prompts,
+        resources=resources,
     )
 
 
