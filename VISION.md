@@ -1,18 +1,18 @@
 # ExpertPack MCP — Vision
 
-**Version:** 0.3 (Draft)
-**Date:** 2026-04-11
+**Version:** 0.4
+**Date:** 2026-04-14
 **Author:** Brian Hearn
 
 ---
 
 ## Thesis
 
-ExpertPack MCP is an expertise-as-a-service layer built on the Model Context Protocol. It makes Esoteric Knowledge (EK) — domain expertise that lives outside LLM weights and isn't easily searchable on the internet — available to any MCP-compatible agent over a standard protocol.
+ExpertPack MCP is an expertise-as-a-service layer built on the Model Context Protocol. When an agent connects to an EP MCP server, it doesn't just gain a search endpoint — it becomes a domain expert. The pack's methodology, workflows, and foundational knowledge are injected into the agent at registration, before the user asks a single question.
 
-An ExpertPack is a structured, schema-validated knowledge pack with provenance metadata, graph relationships, and freshness signals. ExpertPack MCP turns any EP into a live service that agents can connect to for retrieval-augmented generation and, in domain-specific extensions, tool execution.
+An ExpertPack is a structured, schema-validated knowledge pack with provenance metadata, graph relationships, and freshness signals. ExpertPack MCP turns any EP into a live service that transforms a general-purpose agent into a specialist — equipped with orientation, foundational context, and workflow guidance drawn directly from the pack.
 
-**One pack. Any agent. Expert answers.**
+**One pack. Any agent. Instant expertise.**
 
 ---
 
@@ -48,22 +48,38 @@ Together: ExpertPack structures expertise. ExpertPack MCP serves it to any agent
 
 ExpertPack MCP serves structured domain expertise over the Model Context Protocol.
 
+### Expertise Injection at Registration
+
+A general-purpose agent connecting to an EP MCP server for the first time doesn't know what the domain covers, what workflows exist, or how to approach common tasks. EP MCP solves this at the protocol level using all three MCP primitives — in sequence, at registration time:
+
+1. **Orientation (`instructions=`)** — The MCP server's instructions string, derived from `mcp.instructions` in the pack manifest, tells the agent what domain this covers, what problems it can solve, and when to reach for it. The agent reads this during connection handshake.
+
+2. **Foundational context (Resources)** — Files declared in the pack's `context.always` tier — overview, glossary, key concepts — are exposed as MCP Resources. The agent reads these at registration and establishes the baseline knowledge the pack author determined every session needs.
+
+3. **Workflow guidance (Prompts)** — Named MCP Prompts, mapped to the pack's `type: workflow` files, deliver complete task methodology on demand. When the user asks to build territories, the agent invokes the `build_territories` prompt and receives the full workflow — steps, decision points, tool sequence, and expected outputs — before touching any tools.
+
+The result: the agent enters the conversation already expert. It knows the domain vocabulary, the available approaches, and the right workflow for the task. RAG search then handles the long tail — specific questions, edge cases, and details the agent couldn't anticipate.
+
 ### Core Loop
 
 1. **User prompts their agent** (Claude Desktop, Cursor, Windsurf, custom app — any MCP host)
-2. **Agent queries the EP MCP server** with the user's question
-3. **EP MCP performs schema-aware retrieval** — hybrid search (vector + keyword), graph-aware traversal, EP-native chunking
-4. **Returns expert content** — with provenance (source file, content hash, verification date), citation metadata, and freshness signals
-5. **Agent responds** with grounded, expert-level answers that cite their sources
+2. **Agent is already oriented** — instructions and always-tier resources loaded at registration
+3. **Agent invokes relevant prompt** (if task matches a known workflow) — receives complete methodology
+4. **Agent queries EP MCP via `ep_search`** for specific details, edge cases, and supporting content
+5. **EP MCP performs schema-aware retrieval** — hybrid search (vector + keyword), graph-aware traversal, EP-native chunking
+6. **Returns expert content** — with provenance (source file, content hash, verification date), citation metadata, and freshness signals
+7. **Agent responds** with grounded, expert-level answers that cite their sources
 
 ### What Makes This Different From "Just RAG"
 
+- **Expertise injection, not just retrieval** — the agent becomes expert at registration through instructions, resources, and prompts. RAG handles the long tail; the agent doesn't start from zero on every query.
 - **Schema-validated knowledge** — not a pile of scraped docs. Typed files with known structure, relationships, and freshness guarantees.
 - **Provenance** — every chunk carries `id`, `content_hash`, `verified_at`, `verified_by`. Agents can cite sources properly and consumers can verify claims.
 - **Graph-aware retrieval** — EP's `_graph.yaml` adjacency layer means related content follows wikilinks and structural relationships, not just embedding similarity.
 - **EP-native chunking** — files are authored as retrieval units (schema-as-chunker). No lossy post-hoc splitting that breaks context.
 - **Pack portability** — same server, different pack, different domain. Swap `my-pack` for `blender-3d` and you have a different expertise service running.
 - **Freshness as a feature** — provenance metadata and manifest-level freshness SLAs mean the agent (and the user) know how current the knowledge is.
+- **All pack types supported** — product, process, person, and composite packs all map to the same three MCP primitives. The content varies; the pattern is universal.
 
 ---
 
@@ -73,10 +89,10 @@ ExpertPack MCP serves structured domain expertise over the Model Context Protoco
 
 The open-source core. Loads any valid ExpertPack and exposes it over MCP.
 
-**Capabilities:**
+**Capabilities — three MCP primitives, all first-class:**
 - **Tools** — `ep_search` (hybrid retrieval with provenance), `ep_graph_traverse` (follow relationships), `ep_list_topics` (pack structure discovery)
-- **Resources** — EP files as browsable resources with URI scheme (`ep://{pack}/{path}`), manifest as root resource, frontmatter as resource annotations
-- **Prompts** (roadmap) — Pack-aware prompt templates for common domain workflows (e.g., `/plan_territories`, `/compare_methods`). Not in first release; will be informed by real usage patterns.
+- **Resources** — Pack's `context.always` tier files exposed with URI scheme (`ep://{pack}/{path}`). Includes `manifest.yaml`, `overview.md`, glossary, and any files the pack author declared as always-loaded foundational context. Annotated with EP frontmatter (`verified_at`, `type`, `tags`).
+- **Prompts** — Named workflow templates derived from the pack's `mcp.prompts` manifest declarations (or auto-discovered from `type: workflow` files). Each prompt delivers a complete methodology — steps, decision points, tool sequence, expected outputs — for a named task pattern.
 
 **Does not contain:** Any domain-specific logic or tools. Knows about ExpertPacks, not about territories or 3D modeling or solar panels.
 
@@ -91,28 +107,42 @@ Built on top of ExpertPack MCP. Loads a specific pack and adds domain tools.
 - Adds Acme Cloud API tools: `configure_product`, `create_order`, `get_recommendations`, etc.
 - The agent uses RAG to reason about *what* to do, then tools to *do* it
 
-**The conversation arc:**
+**The conversation arc — with expertise injection:**
 
 ```
+[At registration]
+Agent ← EP MCP (instructions): "Territory planning and EasyTerritory expertise.
+                                  Use for territory design, analysis, optimization."
+Agent ← EP MCP (Resources):    overview.md, glossary.md, key-concepts.md
+                                (agent is now oriented in the domain)
+
+[User asks]
 User: "Build 10 territories for my Southeast sales team"
 
-Agent → EP MCP (RAG): retrieves territory planning concepts
-Agent → User: "Should these be polygon-based (ZIP/county) or account clusters?
-               Here's when you'd use each..." [cites EP sources]
+Agent → EP MCP (Prompt):  build_territories
+Agent ← EP MCP:           Full workflow — choose partitioning method,
+                          import accounts, configure optimizer, review balance
 
-User: "Clusters, balanced by revenue"
+Agent → User: "I can build these as polygon-based (ZIP/county) or account
+               clusters. For a Southeast team with revenue balance as the
+               goal, clusters are typically better. Want me to proceed?"
+               [agent already knows this — from workflow prompt, not search]
 
-Agent → EP MCP (RAG): retrieves auto-build best practices, balance metrics
-Agent → Acme MCP (Tool): configure_product({
-    method: "cluster", count: 10, balance: "revenue", ...
+User: "Yes, clusters, balanced by revenue"
+
+Agent → EP MCP (ep_search): "cluster auto-build revenue balance parameters"
+Agent ← EP MCP:             Supporting details, edge cases, parameter guidance
+
+Agent → EZT MCP (Tool):  build_territories({
+    method: "cluster", count: 10, balance: "revenue", region: "southeast", ...
 })
 
-Agent → EP MCP (RAG): validates results against planning heuristics
+Agent → EP MCP (ep_search): validates results against balance heuristics
 Agent → User: "Done. Territory 3 is 40% above average revenue —
                typically indicates a coverage gap. Want me to rebalance?"
 ```
 
-This is what separates an expert agent from a dumb API client. The EK is what makes the tool calls intelligent.
+This is what separates an expert agent from a dumb API client. The agent enters the conversation already knowing the domain — instructions and resources establish the foundation; prompts deliver workflow methodology; RAG handles the long tail. The EK is what makes every step intelligent.
 
 ---
 
@@ -139,8 +169,10 @@ A registry of EP MCP servers — discoverable expertise endpoints. Developers pu
 
 ### In Scope (MVP)
 - Load a valid ExpertPack from a configurable path
-- Expose `ep_search` tool — hybrid retrieval returning content with provenance
-- Expose pack manifest and file listing as MCP Resources
+- **All three MCP primitives — Tools, Resources, Prompts:**
+  - `ep_search`, `ep_graph_traverse`, `ep_list_topics` tools
+  - Resources: `manifest.yaml`, `overview.md`, and all `context.always` tier files exposed as `ep://{pack}/{path}` URIs
+  - Prompts: derived from `mcp.prompts` manifest declarations; auto-discovered from `type: workflow` files when not declared
 - **Streamable HTTP transport** (primary — cloud-hosted, any client can connect)
 - stdio transport (secondary — for local dev/testing convenience)
 - **Authentication** — API key auth (phase 1), OAuth 2.1 (phase 2, aligns with MCP spec)
@@ -168,19 +200,18 @@ A registry of EP MCP servers — discoverable expertise endpoints. Developers pu
 
 ### Out of Scope (MVP)
 - Domain-specific tools (that's the Domain MCP layer, not this repo)
-- Prompts primitive (roadmap — informed by real usage patterns)
 - Marketplace / registry integration
-- Graph traversal tool (valuable but not MVP-critical)
 - Composite pack support (designed for in multi-pack architecture, not exercised in MVP)
 
 ### MVP Success Criteria
 1. Server runs as a cloud-hosted Streamable HTTP endpoint
 2. Load a real production ExpertPack
-3. Send MCP-compliant search queries over HTTP and receive expert answers
+3. All three MCP primitives functional: tools return expert content, resources expose always-tier files, prompts deliver workflow methodology
 4. **Retrieval quality matches or exceeds help bot eval baselines** (84.8% correctness, ≤13% hallucination — Run 12 baseline, Sonnet judge)
-5. Provenance metadata (id, content_hash, verified_at) included in all responses
+5. Provenance metadata (id, content_hash, verified_at) included in all tool responses
 6. Authentication enforced — unauthenticated requests rejected
 7. Testable directly via HTTP (curl, Python, MCP client SDK) without requiring a UI host
+8. A connecting agent with no prior domain knowledge can correctly execute a multi-step workflow using only EP MCP primitives (no manual context stuffing)
 
 ---
 
@@ -276,7 +307,20 @@ Streamable HTTP is standard HTTP — testable directly without a UI host:
 ## What's Next
 
 1. ✅ Vision (this document)
-2. ⬜ Architecture — server structure, SDK choice, retrieval pipeline design, resource/tool schemas, transport details
-3. ⬜ Implementation — MVP build
-4. ⬜ Validation — end-to-end HTTP testing with a real pack, then Claude.ai demo
-5. ⬜ Domain MCP example — domain tools layer built on top of EP MCP
+2. ⬜ Architecture — server structure, SDK choice, retrieval pipeline design, resource/tool/prompt schemas, transport details
+3. ✅ Implementation — MVP build (tools + resources live; prompts to be added)
+4. ✅ Validation — end-to-end HTTP testing with a real pack, help bot integration live
+5. ⬜ **Prompts implementation** — add MCP Prompts primitive; read `mcp.prompts` from manifest; auto-discover workflow files as fallback
+6. ⬜ **Resources expansion** — expose full `context.always` tier, not just manifest and file listing
+7. ⬜ Domain MCP example — domain tools layer built on top of EP MCP (EZT MCP as reference implementation)
+
+---
+
+## Version History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 0.1 | 2026-04-10 | Initial draft — thesis, problem, two-layer architecture |
+| 0.2 | 2026-04-11 | MVP scope, technology considerations, testing strategy |
+| 0.3 | 2026-04-11 | User tiers, conversation arc example, relationship table |
+| 0.4 | 2026-04-14 | Expertise injection model — all three MCP primitives promoted to first-class. Prompts moved from roadmap to MVP scope. Resources expanded to always-tier. Core loop updated. New success criterion: agent executes multi-step workflow without manual context stuffing. Schema alignment: `mcp` block in EP core schema v3.3. |
