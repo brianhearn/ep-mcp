@@ -1,9 +1,9 @@
 # ExpertPack MCP — Architecture
 
-**Version:** 0.1 (Draft)
-**Date:** 2026-04-11
+**Version:** 0.2
+**Date:** 2026-04-14
 **Authors:** Brian Hearn, EasyBot
-**Prerequisite:** [VISION.md](VISION.md) v0.3
+**Prerequisite:** [VISION.md](VISION.md) v0.4
 
 ---
 
@@ -111,7 +111,10 @@ ep_mcp/
 │   └── ep_graph_traverse.py  # ep_graph_traverse (post-MVP)
 ├── resources/
 │   ├── __init__.py
-│   └── pack_resources.py  # MCP resource registration (manifest, file listing)
+│   └── pack_resources.py  # MCP resource registration (always-tier files, manifest, overview)
+├── prompts/
+│   ├── __init__.py
+│   └── pack_prompts.py    # MCP prompt registration (from mcp.prompts manifest + auto-discovery)
 └── cli.py                 # Entry point: `python -m ep_mcp` or `ep-mcp serve`
 ```
 
@@ -137,7 +140,10 @@ cli.py
       → tools/ep_list_topics.py
         → pack/models.py (pack structure data)
       → resources/pack_resources.py
-        → pack/models.py (file metadata)
+        → pack/models.py (manifest, always-tier files)
+      → prompts/pack_prompts.py
+        → pack/manifest.py (mcp.prompts declarations)
+        → pack/models.py (workflow file content)
 ```
 
 
@@ -204,11 +210,26 @@ class PackFile:
     size_tokens: int           # Approximate token count
 
 @dataclass
+class MCPPromptDeclaration:
+    """A single prompt declared in manifest mcp.prompts."""
+    name: str                  # Snake_case prompt name exposed to MCP clients
+    description: str           # One-line description shown during registration
+    source: str                # Relative path to the workflow file
+
+@dataclass
+class MCPConfig:
+    """Parsed mcp block from manifest.yaml."""
+    instructions: str | None                    # Server instructions= string
+    prompts: list[MCPPromptDeclaration]         # Explicit prompt declarations (may be empty)
+    include_always_tier: bool = True            # Expose always-tier files as Resources
+    additional_resources: list[str] = field(default_factory=list)  # Extra resource paths
+
+@dataclass
 class Pack:
     """A loaded ExpertPack ready for indexing and serving."""
     slug: str
     name: str
-    type: str                  # "person", "product", "process"
+    type: str                  # "person", "product", "process", "composite"
     version: str
     description: str
     entry_point: str
@@ -216,6 +237,8 @@ class Pack:
     manifest: dict             # Raw parsed manifest.yaml
     graph: dict | None         # Parsed _graph.yaml (if present)
     freshness: dict | None     # Freshness metadata from manifest
+    mcp_config: MCPConfig      # Parsed mcp block (with defaults if absent)
+    always_tier: list[str]     # Resolved file paths in context.always tier
     index_path: str            # Path to SQLite index file
 ```
 
@@ -679,16 +702,74 @@ All EP MCP tools are annotated per MCP spec:
 
 ## 8. MCP Resources
 
-### 8.1 Resource URI Scheme
+### 8.1 What Gets Exposed as Resources
+
+MCP Resources are files the agent can read directly — not search results, but specific content the server makes available as named, addressable artifacts. EP MCP exposes three categories:
+
+**Category 1 — Always-tier files (foundational context):**
+All files listed in the pack's `context.always` manifest tier are exposed as Resources. These are the files the pack author determined every session needs: `overview.md`, `glossary.md`, key concept files. An agent connecting to the server can read these at registration to establish domain orientation before the user asks anything.
+
+`manifest.yaml` and `overview.md` are always exposed, even if not explicitly listed in `context.always`.
+
+**Category 2 — Additional declared resources:**
+Files listed in `mcp.resources.additional` in the manifest are exposed regardless of their context tier. Useful for exposing a glossary or reference file that doesn't belong in `context.always` for RAG purposes but is valuable for agents to read at registration.
+
+**Category 3 — On-demand file access:**
+Any file in the pack can be accessed directly via URI template. This supports agents that want to read a specific file after discovering it through `ep_search` or `ep_list_topics`.
+
+### 8.2 Resource URI Scheme
 
 ```
-ep://{pack_slug}/manifest          → Pack manifest (YAML)
-ep://{pack_slug}/files             → File listing with metadata
-ep://{pack_slug}/file/{path}       → Individual file content (raw, with frontmatter)
-ep://{pack_slug}/graph             → Knowledge graph (_graph.yaml)
+ep://{pack_slug}/manifest            → Pack manifest (YAML as JSON)
+ep://{pack_slug}/overview            → overview.md (always exposed)
+ep://{pack_slug}/always/{path}       → A specific always-tier file
+ep://{pack_slug}/file/{path}         → Any file by path (raw, with frontmatter)
+ep://{pack_slug}/graph               → Knowledge graph (_graph.yaml)
 ```
 
-### 8.2 Resource Annotations
+### 8.3 Resource Registration
+
+```python
+def register_resources(mcp: FastMCP, pack: Pack) -> None:
+    """Register MCP Resources for a pack."""
+
+    # 1. Always expose manifest and overview
+    @mcp.resource(f"ep://{pack.slug}/manifest")
+    async def get_manifest() -> str:
+        """Pack identity, version, coverage, and freshness metadata."""
+        return json.dumps(pack.manifest.raw, indent=2, default=str)
+
+    @mcp.resource(f"ep://{pack.slug}/overview")
+    async def get_overview() -> str:
+        """Pack overview — what this pack covers and how to navigate it."""
+        return pack.files[pack.entry_point].raw_content
+
+    # 2. Expose always-tier files
+    if pack.mcp_config.include_always_tier:
+        for path in pack.always_tier:
+            if path in pack.files and path != pack.entry_point:
+                f = pack.files[path]
+                @mcp.resource(f"ep://{pack.slug}/always/{path}")
+                async def get_always_file(p=path) -> str:
+                    return pack.files[p].raw_content
+
+    # 3. Expose additional declared resources
+    for path in pack.mcp_config.additional_resources:
+        if path in pack.files:
+            @mcp.resource(f"ep://{pack.slug}/file/{path}")
+            async def get_additional_file(p=path) -> str:
+                return pack.files[p].raw_content
+
+    # 4. URI template for on-demand file access
+    @mcp.resource(f"ep://{pack.slug}/file/{{path}}")
+    async def get_file(path: str) -> str:
+        """Read any pack file by path. Returns raw markdown including frontmatter."""
+        if path not in pack.files:
+            raise ValueError(f"File not found in pack: {path}")
+        return pack.files[path].raw_content
+```
+
+### 8.4 Resource Annotations
 
 MCP resource annotations map to EP metadata:
 
@@ -700,36 +781,170 @@ MCP resource annotations map to EP metadata:
 | `audience` | EP `retrieval_strategy` | "internal" for on_demand, "public" for standard |
 | `lastModified` | `verified_at` from provenance | "2026-04-10T00:00:00Z" |
 
-### 8.3 Resource Templates
-
-Dynamic resources use URI templates per MCP spec:
-
-```python
-@mcp.resource("ep://{pack_slug}/file/{path}")
-async def get_file(pack_slug: str, path: str) -> str:
-    """Get a specific file from the ExpertPack.
-    
-    Returns raw markdown content including frontmatter.
-    Use ep_search for retrieval-optimized content (frontmatter stripped).
-    """
-```
-
-### 8.4 Resource vs Tool: When to Use Which
+### 8.5 Resource vs Tool: When to Use Which
 
 | Use Case | Primitive | Why |
 |----------|-----------|-----|
 | "Search for information about X" | Tool (`ep_search`) | Agent needs ranked, relevant content |
 | "Show me the pack structure" | Tool (`ep_list_topics`) | Agent needs structured metadata |
 | "Read this specific file" | Resource (`ep://slug/file/path`) | Client/agent knows exactly which file |
-| "What does this pack cover?" | Resource (`ep://slug/manifest`) | Direct metadata access |
+| "What does this pack cover?" | Resource (`ep://slug/overview`) | Entry point, always available |
 | "What's connected to this file?" | Tool (`ep_graph_traverse`) | Agent needs computed relationships |
-
+| Foundational context at registration | Resource (`ep://slug/always/...`) | Agent reads before first user query |
 
 ---
 
-## 9. Transport & Authentication
+## 9. MCP Prompts
 
-### 9.1 Streamable HTTP (Primary)
+### 9.1 What Prompts Do
+
+MCP Prompts deliver complete workflow methodology to a connecting agent on demand. When a user asks to build territories, the agent doesn't need to know the workflow exists, search for it, or assemble it from fragments — it invokes the `build_territories` prompt and receives the full procedure in a single structured response.
+
+This is the mechanism that turns EP MCP from a search endpoint into an expertise injection layer. Prompts are the "proactive" counterpart to `ep_search`'s reactive retrieval.
+
+### 9.2 Prompt Source: Manifest Declarations vs Auto-Discovery
+
+**Explicit declaration (preferred):**
+The pack's `mcp.prompts` manifest block maps prompt names to workflow files. EP MCP reads this at startup and registers exactly those prompts with the names and descriptions the pack author chose.
+
+```yaml
+# manifest.yaml
+mcp:
+  prompts:
+    - name: "build_territories"
+      description: "End-to-end workflow for building territories from scratch"
+      source: "workflows/wf-build-territories.md"
+    - name: "analyze_territory_balance"
+      description: "Analyze balance across existing territories"
+      source: "workflows/wf-balance-analysis.md"
+```
+
+**Auto-discovery fallback:**
+If `mcp.prompts` is absent or empty, EP MCP scans the pack for all files with `type: workflow` in their frontmatter and registers them as prompts. Prompt name is derived from the filename (strip directory prefix and file prefix convention, kebab-to-snake). Description is taken from the file's frontmatter `title` or first H1.
+
+Auto-discovery is a reasonable default for packs that haven't declared an `mcp` block. Explicit declaration is preferred — it gives the pack author control over naming, descriptions, and which workflows surface as first-class prompts.
+
+### 9.3 Prompt Content Assembly
+
+Each prompt response delivers the full content of its source workflow file — frontmatter stripped, markdown intact. Workflow files are `retrieval_strategy: atomic`, meaning they must be read whole. This maps perfectly to prompt delivery: the agent receives the complete procedure, not a fragment.
+
+The prompt response is structured as an MCP `PromptMessage`:
+
+```python
+from mcp.types import PromptMessage, TextContent
+
+PromptMessage(
+    role="user",
+    content=TextContent(
+        type="text",
+        text=workflow_file.content  # frontmatter stripped, full markdown
+    )
+)
+```
+
+### 9.4 Prompt Registration
+
+```python
+def register_prompts(mcp: FastMCP, pack: Pack) -> None:
+    """Register MCP Prompts for a pack."""
+
+    declarations = _resolve_prompt_declarations(pack)
+
+    for decl in declarations:
+        source_file = pack.files.get(decl.source)
+        if source_file is None:
+            logger.warning("Prompt source not found | pack=%s source=%s", pack.slug, decl.source)
+            continue
+
+        @mcp.prompt(name=decl.name, description=decl.description)
+        async def get_prompt(src=source_file) -> list[PromptMessage]:
+            return [
+                PromptMessage(
+                    role="user",
+                    content=TextContent(type="text", text=src.content)
+                )
+            ]
+
+def _resolve_prompt_declarations(pack: Pack) -> list[MCPPromptDeclaration]:
+    """Return explicit manifest declarations, or auto-discover from workflow files."""
+    if pack.mcp_config.prompts:
+        return pack.mcp_config.prompts  # Explicit wins
+
+    # Auto-discovery: all type:workflow files
+    discovered = []
+    for path, f in pack.files.items():
+        if f.type == "workflow":
+            name = _filename_to_prompt_name(path)
+            description = f.title or name.replace("_", " ").title()
+            discovered.append(MCPPromptDeclaration(name=name, description=description, source=path))
+
+    return sorted(discovered, key=lambda d: d.name)
+```
+
+### 9.5 Prompt Validation
+
+At startup, before registering prompts, EP MCP validates each declaration:
+
+| Check | Failure Mode | Action |
+|-------|-------------|--------|
+| Source file exists | `E-MCP-01` | Log error, skip prompt registration |
+| Source file has `type: workflow` | `W-MCP-01` | Log warning, register anyway |
+| Source file has `retrieval_strategy: atomic` | `W-MCP-02` | Log warning, register anyway |
+| `mcp.instructions` > 500 chars | `W-MCP-03` | Log warning, truncate if needed |
+
+Validation warnings are logged at startup and accessible via the `/health` endpoint's diagnostics.
+
+### 9.6 Pack Type Considerations
+
+The Prompts primitive applies to all pack types, but the workflow content varies:
+
+| Pack Type | Typical Prompt Content | Example Prompts |
+|-----------|----------------------|----------------|
+| **Product** | Task workflows — how to accomplish goals using the product | `build_territories`, `analyze_balance`, `import_alignment_file` |
+| **Process** | Process execution — the process itself, step by step | `onboard_new_customer`, `run_quarterly_review` |
+| **Person** | Interaction patterns — voice, approach, known preferences | `write_in_voice`, `approach_problem_as` |
+| **Composite** | Cross-domain workflows spanning multiple knowledge areas | Varies by composition |
+
+---
+
+## 10. MCP Instructions
+
+The `instructions=` parameter on a FastMCP server instance is the agent's first orientation signal. It's what MCP-compatible hosts display during server registration and what capable agents read to decide when to call this server.
+
+### 10.1 Source
+
+EP MCP derives the instructions string in priority order:
+
+1. **`mcp.instructions` in manifest** (explicit, preferred) — The pack author's curated string, written for agents. Should answer: what domain, what problems, when to reach for it.
+2. **`manifest.description`** (fallback) — The pack's human-readable description. Adequate but less precise than a purpose-written agent instruction.
+
+```python
+def get_server_instructions(pack: Pack) -> str:
+    """Derive the MCP server instructions string for a pack."""
+    if pack.mcp_config.instructions:
+        return pack.mcp_config.instructions.strip()
+    return pack.manifest.raw.get("description", f"{pack.name} ExpertPack knowledge service.")
+```
+
+### 10.2 Usage in Server Creation
+
+```python
+mcp = FastMCP(
+    name=f"ep-mcp-{pack.slug}",
+    instructions=get_server_instructions(pack),
+    stateless_http=True,
+)
+```
+
+### 10.3 Length Constraint
+
+The MCP spec doesn't define a hard limit, but EP MCP warns (`W-MCP-03`) if `mcp.instructions` exceeds 500 characters. Instructions should be a tight paragraph, not a full overview. `overview.md` is the right place for detailed context — it's exposed as a Resource for agents that want more.
+
+---
+
+## 11. Transport & Authentication
+
+### 11.1 Streamable HTTP (Primary)
 
 The server uses FastMCP's built-in Streamable HTTP transport. Single endpoint per pack:
 
@@ -762,7 +977,7 @@ app = Starlette(routes=[
 ])
 ```
 
-### 9.2 stdio (Secondary)
+### 11.2 stdio (Secondary)
 
 For local development and testing. Launched as:
 
@@ -783,7 +998,7 @@ ep-mcp serve --pack /path/to/my-pack --transport stdio
 
 stdio mode serves a single pack (no routing needed). Same server logic, different transport.
 
-### 9.3 Authentication — Phase 1 (API Key)
+### 11.3 Authentication — Phase 1 (API Key)
 
 Simple API key authentication sufficient for internal use and early external deployments.
 
@@ -814,7 +1029,7 @@ class APIKeyAuth:
         return key in self.pack_keys.get(pack_slug, set())
 ```
 
-### 9.4 Authentication — Phase 2 (OAuth 2.1, Future)
+### 11.4 Authentication — Phase 2 (OAuth 2.1, Future)
 
 Aligns with MCP spec's OAuth 2.1 with PKCE support. Enables:
 - SSO integration (Azure AD / Entra ID — natural for enterprise SSO)
@@ -824,7 +1039,7 @@ Aligns with MCP spec's OAuth 2.1 with PKCE support. Enables:
 
 Phase 2 auth is architecturally supported (the auth middleware is a pluggable interface) but not implemented in MVP.
 
-### 9.5 CORS
+### 11.5 CORS
 
 For browser-based MCP clients (e.g., Claude.ai web):
 
@@ -841,9 +1056,9 @@ Configurable in server config. Default: restrictive (no open CORS).
 
 ---
 
-## 10. Deployment
+## 12. Deployment
 
-### 10.1 MVP Deployment Target
+### 12.1 MVP Deployment Target
 
 ExpertPack droplet (`your-server-ip`):
 - Already hosts your ExpertPack directory
@@ -874,7 +1089,7 @@ Internet
 
 Managed via systemd unit. Single process, single pack for MVP.
 
-### 10.2 CLI Entry Point
+### 12.2 CLI Entry Point
 
 ```bash
 # Start server (Streamable HTTP, production)
@@ -893,7 +1108,7 @@ ep-mcp validate --pack /path/to/pack
 ep-mcp info --config ep-mcp-config.yaml
 ```
 
-### 10.3 Environment Variables
+### 12.3 Environment Variables
 
 ```bash
 # Embedding provider API keys (one required, depends on config)
@@ -915,9 +1130,9 @@ EP_MCP_LOG_LEVEL=info
 
 ---
 
-## 11. Testing Strategy
+## 13. Testing Strategy
 
-### 11.1 Unit Tests
+### 13.1 Unit Tests
 
 Each module tested independently:
 
@@ -932,7 +1147,7 @@ Each module tested independently:
 | `embeddings/*.py` | Mock embedding providers, batch handling, error paths |
 | `auth.py` | Key validation, missing header, invalid key, multi-key rotation |
 
-### 11.2 Integration Tests
+### 13.2 Integration Tests
 
 End-to-end tests using a real pack:
 
@@ -943,7 +1158,7 @@ End-to-end tests using a real pack:
 5. **MCP protocol:** Full JSON-RPC roundtrip — initialize → list tools → call ep_search → verify response schema
 6. **Auth:** Authenticated request succeeds, unauthenticated request rejected
 
-### 11.3 Eval Alignment
+### 13.3 Eval Alignment
 
 Search quality tests should align with the help bot eval baseline:
 - Same 20-question benchmark set (tagged `benchmark: true` in `questions.yaml`)
@@ -952,7 +1167,7 @@ Search quality tests should align with the help bot eval baseline:
 
 This ensures the MCP retrieval pipeline matches or exceeds the existing help bot.
 
-### 11.4 Test Execution
+### 13.4 Test Execution
 
 ```bash
 # Unit tests
@@ -967,9 +1182,9 @@ pytest tests/mcp/ -v
 
 ---
 
-## 12. Dependencies
+## 14. Dependencies
 
-### 12.1 Python Packages
+### 14.1 Python Packages
 
 ```
 # Core
@@ -998,13 +1213,13 @@ pytest>=8.0
 pytest-asyncio>=0.23
 ```
 
-### 12.2 System Dependencies
+### 14.2 System Dependencies
 
 - **Python 3.11+** (for modern async, typing, sqlite3 improvements)
 - **SQLite 3.41+** (for FTS5 and sqlite-vec compatibility — Python 3.11+ bundles this)
 - **sqlite-vec extension** (loaded at runtime, installed via pip)
 
-### 12.3 No Heavy Dependencies
+### 14.3 No Heavy Dependencies
 
 Intentionally excluded:
 - **No LangChain / LlamaIndex** — direct SQLite queries are simpler, faster, and fully controllable
@@ -1016,7 +1231,7 @@ The dependency footprint is deliberately small. EP MCP should install and run wi
 
 ---
 
-## 13. Resolved Questions
+## 15. Resolved Questions
 
 | # | Question | Decision | Notes |
 |---|----------|----------|-------|
@@ -1030,7 +1245,7 @@ The dependency footprint is deliberately small. EP MCP should install and run wi
 
 ---
 
-## 14. Relationship to Domain MCP Servers
+## 16. Relationship to Domain MCP Servers
 
 ExpertPack MCP is **Layer 1** — the generic knowledge serving layer. Domain MCP servers (Layer 2) extend it:
 
@@ -1071,10 +1286,14 @@ This is the architectural boundary: EP MCP provides knowledge, domain MCP provid
 
 ## What's Next
 
-1. ✅ Vision (VISION.md v0.3)
-2. ✅ Architecture (this document)
-3. ⬜ Implementation — start with pack loader + indexer + ep_search, then transport + auth
-4. ⬜ Validation — integration tests against my-pack, eval alignment
-5. ⬜ Deploy — ExpertPack droplet, nginx reverse proxy, systemd
-6. ⬜ Domain MCP example — domain tools layer
+1. ✅ Vision (VISION.md v0.4)
+2. ✅ Architecture (this document v0.2)
+3. ✅ Implementation — Tools (ep_search, ep_list_topics, ep_graph_traverse) + basic Resources (manifest, file listing) + transport + auth
+4. ✅ Deploy — ExpertPack droplet, live at https://expertpack.ai/mcp
+5. ✅ Validation — help bot integration, eval baseline (84.1% correctness, Run 15)
+6. ⬜ **Prompts implementation** — add `prompts/pack_prompts.py`; read `mcp.prompts` from manifest; auto-discover `type: workflow` files as fallback; register via `@mcp.prompt()`
+7. ⬜ **Resources expansion** — expand `resources/pack_resources.py` to expose always-tier files and additional declared resources beyond manifest + file listing
+8. ⬜ **Instructions wiring** — update `create_pack_mcp()` in `server.py` to derive `instructions=` from `mcp.instructions` manifest field
+9. ⬜ **MCPConfig model** — add `MCPConfig` and `MCPPromptDeclaration` dataclasses to `pack/models.py`; update `pack/manifest.py` to parse `mcp` block
+10. ⬜ Domain MCP example — EZT MCP as reference implementation (EP MCP Layer 1 + EZT API tools Layer 2)
 
