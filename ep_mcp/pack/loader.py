@@ -216,22 +216,43 @@ def _ensure_list(value: object) -> list[str]:
 def _resolve_always_tier(always_paths: list[str], files: dict, pack_path: Path) -> list[str]:
     """Resolve always-tier path declarations to actual file paths.
 
-    Supports both direct file paths and directory paths (trailing /).
+    Supports:
+      - Direct file paths:        overview.md
+      - Directory prefix globs:   concepts/   (trailing slash)
+      - Filename glob patterns:   glossary-*.md  (fnmatch, basename only)
+
+    Logs a warning when a declaration resolves to zero files.
     Returns sorted list of resolved file paths present in the pack.
     """
+    import fnmatch
+
     resolved = []
     for declared in always_paths:
+        before = len(resolved)
+
         if declared.endswith("/"):
-            # Directory glob — include all files under this directory
+            # Directory prefix — include all files under this directory
             prefix = declared.rstrip("/")
             for file_path in files:
                 if file_path.startswith(prefix + "/"):
                     resolved.append(file_path)
+        elif "*" in declared or "?" in declared or "[" in declared:
+            # Glob pattern — match against file basenames (supports e.g. glossary-*.md)
+            for file_path in files:
+                basename = file_path.rsplit("/", 1)[-1]
+                if fnmatch.fnmatch(basename, declared) or fnmatch.fnmatch(file_path, declared):
+                    resolved.append(file_path)
         else:
+            # Exact path
             if declared in files:
                 resolved.append(declared)
-            else:
-                logger.debug("always-tier path not found in pack: %s", declared)
+
+        if len(resolved) == before:
+            logger.warning(
+                "always-tier declaration '%s' matched no files in pack — check manifest context.always",
+                declared,
+            )
+
     return sorted(set(resolved))
 
 
