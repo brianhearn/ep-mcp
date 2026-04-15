@@ -41,8 +41,14 @@ class RetrievalConfig(BaseModel):
     candidate_multiplier: int = 8
     mmr_enabled: bool = True
     mmr_lambda: float = 0.7
-    min_score: float = 0.35
+    min_score: float = 0.35  # deprecated: use adaptive threshold fields below
     default_max_results: int = 10
+
+    # Adaptive threshold filtering (replaces flat min_score)
+    adaptive_threshold: bool = True
+    activation_floor: float = 0.15
+    score_ratio: float = 0.55
+    absolute_floor: float = 0.10
     type_match_boost: float = 0.05
     tag_match_boost: float = 0.03
     always_tier_boost: float = 0.02

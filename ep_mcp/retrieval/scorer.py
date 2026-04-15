@@ -1,9 +1,12 @@
-"""Score fusion, metadata boosting, and MMR re-ranking."""
+"""Score fusion, metadata boosting, MMR re-ranking, and adaptive threshold filtering."""
 
 from __future__ import annotations
 
 import json
+import logging
 import math
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_vector_scores(results: list[dict], max_distance: float = 2.0) -> list[dict]:
@@ -164,6 +167,58 @@ def mmr_rerank(
             del remaining[best_id]
 
     return selected
+
+
+def apply_adaptive_threshold(
+    scores: dict[int, float],
+    activation_floor: float = 0.15,
+    score_ratio: float = 0.55,
+    absolute_floor: float = 0.10,
+) -> dict[int, float]:
+    """Filter scores using adaptive ratio-based thresholds.
+
+    Two-step filter:
+    1. Activation floor — if the best score is below this, return empty.
+       The query is too far from anything in the pack.
+    2. Score ratio — keep results within `score_ratio` of the best score,
+       with `absolute_floor` as a hard minimum.
+
+    This adapts to pack size, embedding model, and query specificity
+    instead of relying on a fixed absolute cutoff.
+
+    Args:
+        scores: {chunk_id: fused_score} dict
+        activation_floor: Minimum best-score to return any results
+        score_ratio: Keep results within this fraction of best score
+        absolute_floor: Never filter below this regardless of ratio
+
+    Returns:
+        Filtered {chunk_id: score} dict (may be empty)
+    """
+    if not scores:
+        return {}
+
+    best_score = max(scores.values())
+
+    if best_score < activation_floor:
+        logger.debug(
+            "adaptive_threshold | best_score=%.4f < activation_floor=%.2f → empty",
+            best_score, activation_floor,
+        )
+        return {}
+
+    ratio_cutoff = best_score * score_ratio
+    effective_min = max(ratio_cutoff, absolute_floor)
+
+    filtered = {cid: s for cid, s in scores.items() if s >= effective_min}
+
+    logger.debug(
+        "adaptive_threshold | best=%.4f ratio_cutoff=%.4f effective_min=%.4f "
+        "kept=%d/%d",
+        best_score, ratio_cutoff, effective_min, len(filtered), len(scores),
+    )
+
+    return filtered
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:

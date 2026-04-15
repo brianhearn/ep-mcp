@@ -1,11 +1,12 @@
 """Hybrid retrieval engine: vector + BM25 → fusion → boosting → MMR → post-top-K graph expansion.
 
-Updated pipeline (per new additive design):
-1. Vector + BM25 search → normalize → fuse → min_score filter
-2. Metadata boosting
-3. MMR re-ranking → top-K (finalized here, no interference from expansion)
-4. Post-top-K graph expansion (additive bonus neighbors only)
-5. Return top-K + bonus neighbors (flagged with graph_expanded=True)
+Pipeline:
+1. Vector + BM25 search → normalize → fuse
+2. Adaptive threshold filter (ratio-based) or legacy flat min_score
+3. Metadata boosting
+4. MMR re-ranking → top-K (finalized here, no interference from expansion)
+5. Post-top-K graph expansion (additive bonus neighbors only)
+6. Return top-K + bonus neighbors (flagged with graph_expanded=True)
 """
 
 import json
@@ -22,6 +23,7 @@ from ..pack.models import Pack
 from .graph_helpers import GraphLookup
 from .models import SearchRequest, SearchResult
 from .scorer import (
+    apply_adaptive_threshold,
     apply_metadata_boosts,
     fuse_scores,
     mmr_rerank,
@@ -39,7 +41,7 @@ class RetrievalEngine:
     1. Vector search (sqlite-vec) + BM25 search (FTS5) in parallel
     2. Score normalization
     3. Score fusion (weighted combination)
-    4. Filter by min_score
+    4. Adaptive threshold filter (or legacy flat min_score)
     5. Metadata boosting
     6. MMR re-ranking (final top-K)
     7. Post-top-K additive graph expansion (bonus results only)
@@ -106,8 +108,16 @@ class RetrievalEngine:
             text_weight=self.config.text_weight,
         )
 
-        # Filter by min_score
-        fused = {cid: s for cid, s in fused.items() if s >= self.config.min_score}
+        # Step 3b: Score filtering — adaptive threshold or legacy flat cutoff
+        if self.config.adaptive_threshold:
+            fused = apply_adaptive_threshold(
+                fused,
+                activation_floor=self.config.activation_floor,
+                score_ratio=self.config.score_ratio,
+                absolute_floor=self.config.absolute_floor,
+            )
+        else:
+            fused = {cid: s for cid, s in fused.items() if s >= self.config.min_score}
 
         if not fused:
             return []
