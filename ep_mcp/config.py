@@ -63,6 +63,9 @@ class RetrievalConfig(BaseModel):
     length_penalty_threshold: int = 80   # chars; chunks below this are penalized
     length_penalty_factor: float = 0.15  # multiplicative penalty (score *= 1 - factor)
 
+    # Intent-aware routing — adjust vector/BM25 weights based on query intent
+    intent_routing_enabled: bool = True
+
 
 class ServerConfig(BaseModel):
     """Top-level server configuration."""

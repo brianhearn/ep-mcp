@@ -1,12 +1,14 @@
 """Hybrid retrieval engine: vector + BM25 → fusion → boosting → MMR → post-top-K graph expansion.
 
 Pipeline:
-1. Vector + BM25 search → normalize → fuse
-2. Adaptive threshold filter (ratio-based) or legacy flat min_score
-3. Metadata boosting
-4. MMR re-ranking → top-K (finalized here, no interference from expansion)
-5. Post-top-K graph expansion (additive bonus neighbors only)
-6. Return top-K + bonus neighbors (flagged with graph_expanded=True)
+1. Intent classification → adaptive weight selection
+2. Vector + BM25 search → normalize → fuse (with intent-adjusted weights)
+3. Adaptive threshold filter (ratio-based) or legacy flat min_score
+4. Metadata boosting
+5. Length penalty
+6. MMR re-ranking → top-K (finalized here, no interference from expansion)
+7. Post-top-K graph expansion (additive bonus neighbors only)
+8. Return top-K + bonus neighbors (flagged with graph_expanded=True)
 """
 
 import json
@@ -21,6 +23,7 @@ from ..embeddings.base import EmbeddingProvider
 from ..index.sqlite_store import SQLiteStore
 from ..pack.models import Pack
 from .graph_helpers import GraphLookup
+from .intent import IntentClassifier, QueryIntent
 from .models import SearchRequest, SearchResult
 from .scorer import (
     apply_adaptive_threshold,
@@ -39,14 +42,16 @@ class RetrievalEngine:
     """Hybrid search engine for a single pack.
 
     Pipeline (ARCHITECTURE.md §5.1):
-    1. Vector search (sqlite-vec) + BM25 search (FTS5) in parallel
-    2. Score normalization
-    3. Score fusion (weighted combination)
-    4. Adaptive threshold filter (or legacy flat min_score)
-    5. Metadata boosting
-    6. MMR re-ranking (final top-K)
-    7. Post-top-K additive graph expansion (bonus results only)
-    8. Return results
+    1. Intent classification → adaptive weight selection
+    2. Vector search (sqlite-vec) + BM25 search (FTS5) in parallel
+    3. Score normalization
+    4. Score fusion (intent-adjusted weighted combination)
+    5. Adaptive threshold filter (or legacy flat min_score)
+    6. Metadata boosting
+    7. Length penalty
+    8. MMR re-ranking (final top-K)
+    9. Post-top-K additive graph expansion (bonus results only)
+    10. Return results
     """
 
     def __init__(
@@ -68,6 +73,9 @@ class RetrievalEngine:
         # Graph lookup for file_path ↔ node_id mapping
         self._graph_lookup = graph_lookup or GraphLookup.from_pack(pack)
 
+        # Intent classifier for query-adaptive weight routing
+        self._intent_classifier = IntentClassifier()
+
     async def search(
         self,
         request: SearchRequest,
@@ -85,7 +93,20 @@ class RetrievalEngine:
         max_results = request.max_results
         candidate_count = max_results * self.config.candidate_multiplier
 
-        # Step 1: Dual search
+        # Step 1: Intent classification → adaptive weight selection
+        vector_weight = self.config.vector_weight
+        text_weight = self.config.text_weight
+        if self.config.intent_routing_enabled:
+            intent_result = self._intent_classifier.classify(request.query)
+            if intent_result.vector_weight is not None:
+                vector_weight = intent_result.vector_weight
+                text_weight = intent_result.text_weight
+            logger.debug(
+                "intent_routing | query='%s' intent=%s vector_weight=%.2f text_weight=%.2f",
+                request.query, intent_result.intent.value, vector_weight, text_weight,
+            )
+
+        # Step 2: Dual search
         query_embedding = await self.provider.embed_query(request.query)
         vec_results = self.store.vector_search(query_embedding, limit=candidate_count)
         bm25_results = self.store.bm25_search(request.query, limit=candidate_count)
@@ -98,15 +119,15 @@ class RetrievalEngine:
         if not vec_results and not bm25_results:
             return []
 
-        # Step 2: Normalize scores
+        # Step 3: Normalize scores
         vec_results = normalize_vector_scores(vec_results)
         bm25_results = normalize_bm25_scores(bm25_results)
 
-        # Step 3: Score fusion
+        # Step 4: Score fusion (with intent-adjusted weights)
         fused = fuse_scores(
             vec_results, bm25_results,
-            vector_weight=self.config.vector_weight,
-            text_weight=self.config.text_weight,
+            vector_weight=vector_weight,
+            text_weight=text_weight,
         )
 
         # Step 3b: Score filtering — adaptive threshold or legacy flat cutoff
