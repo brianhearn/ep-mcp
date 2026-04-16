@@ -112,14 +112,17 @@ with header `Authorization: Bearer <key>`.
 
 ## Environment Variables
 
-| Variable                  | Required          | Description |
-|---------------------------|-------------------|-----------|
-| `GEMINI_API_KEY`          | Yes (Gemini)      | Gemini embedding API key |
-| `AZURE_OPENAI_API_KEY`    | Yes (Azure)       | Azure OpenAI API key |
-| `EP_MCP_KEY_{SLUG}`       | Optional          | Per-pack API key override (uppercase slug, hyphens→underscores) |
-| `EP_MCP_REMOTE_HOST`      | Optional          | Deploy target for `scripts/deploy.sh` |
-| `EP_MCP_REMOTE_SRC`       | Optional          | Remote source path for `deploy.sh` |
-| `EP_MCP_REMOTE_SITE_PKG`  | Optional          | Remote site-packages path for `deploy.sh` |
+Only the key for your configured embedding provider is required.
+
+| Variable                  | Required | Description |
+|---------------------------|----------|-------------|
+| `GEMINI_API_KEY`          | If `embedding.provider: gemini` | Gemini embedding API key |
+| `AZURE_OPENAI_API_KEY`    | If `embedding.provider: azure_openai` | Azure OpenAI embedding API key |
+| `OPENAI_API_KEY`          | If `embedding.provider: openai` | OpenAI embedding API key |
+| `EP_MCP_KEY_{SLUG}`       | Optional | Per-pack API key override (uppercase slug, hyphens→underscores) |
+| `EP_MCP_REMOTE_HOST`      | Optional | Deploy target for `scripts/deploy.sh` |
+| `EP_MCP_REMOTE_SRC`       | Optional | Remote source path for `deploy.sh` |
+| `EP_MCP_REMOTE_SITE_PKG`  | Optional | Remote site-packages path for `deploy.sh` |
 
 ## Tech Stack
 
