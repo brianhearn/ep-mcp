@@ -24,6 +24,7 @@ from .graph_helpers import GraphLookup
 from .models import SearchRequest, SearchResult
 from .scorer import (
     apply_adaptive_threshold,
+    apply_length_penalty,
     apply_metadata_boosts,
     fuse_scores,
     mmr_rerank,
@@ -135,6 +136,13 @@ class RetrievalEngine:
             type_match_boost=self.config.type_match_boost,
             tag_match_boost=self.config.tag_match_boost,
             always_tier_boost=self.config.always_tier_boost,
+        )
+
+        # Step 4b: Length penalty — discount very short chunks
+        fused = apply_length_penalty(
+            fused, chunks,
+            short_threshold=self.config.length_penalty_threshold,
+            short_penalty=self.config.length_penalty_factor,
         )
 
         # Step 5: MMR re-ranking → finalized top-K

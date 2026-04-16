@@ -169,6 +169,46 @@ def mmr_rerank(
     return selected
 
 
+def apply_length_penalty(
+    scores: dict[int, float],
+    chunks: dict[int, dict],
+    short_threshold: int = 80,
+    short_penalty: float = 0.15,
+) -> dict[int, float]:
+    """Penalize very short chunks that are unlikely to contain a complete answer.
+
+    Chunks below `short_threshold` characters are probably stubs, headings, or
+    navigation artefacts. Apply a multiplicative penalty so they can still win
+    on relevance but at a discounted rate.
+
+    Args:
+        scores: {chunk_id: score} dict (modified in-place and returned)
+        chunks: {chunk_id: chunk_row} from SQLite — must include 'content'
+        short_threshold: Character count below which a chunk is considered short
+        short_penalty: Multiplicative penalty applied to short chunks (0–1)
+
+    Returns:
+        Updated {chunk_id: score} dict
+    """
+    penalized = 0
+    for cid, score in scores.items():
+        chunk = chunks.get(cid)
+        if not chunk:
+            continue
+        content = chunk.get("content", "")
+        if len(content) < short_threshold:
+            scores[cid] = score * (1.0 - short_penalty)
+            penalized += 1
+
+    if penalized:
+        logger.debug(
+            "length_penalty | penalized=%d/%d chunks (threshold=%d chars, penalty=%.2f)",
+            penalized, len(scores), short_threshold, short_penalty,
+        )
+
+    return scores
+
+
 def apply_adaptive_threshold(
     scores: dict[int, float],
     activation_floor: float = 0.15,

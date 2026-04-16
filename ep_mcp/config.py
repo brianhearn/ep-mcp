@@ -59,6 +59,10 @@ class RetrievalConfig(BaseModel):
     graph_expansion_confidence_threshold: float = 0.38
     graph_expansion_structural_bonus: float = 1.0
 
+    # Length penalty — discount very short chunks (stubs, headings, nav artefacts)
+    length_penalty_threshold: int = 80   # chars; chunks below this are penalized
+    length_penalty_factor: float = 0.15  # multiplicative penalty (score *= 1 - factor)
+
 
 class ServerConfig(BaseModel):
     """Top-level server configuration."""
