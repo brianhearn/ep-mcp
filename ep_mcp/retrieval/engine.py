@@ -226,13 +226,25 @@ class RetrievalEngine:
     ) -> list[SearchResult]:
         """Additive post-top-K graph expansion.
 
-        Identifies high-confidence seeds from finalized top-K, loads 1-hop neighbors
-        (excluding anything already in top-K), scores them independently against the
-        original query_embedding using cosine similarity, and includes qualifying
-        neighbors as bonus results flagged with graph_expanded=True.
+        Two modes controlled by config.graph_expansion_deep:
 
-        Does NOT displace or alter the top-K results. Gracefully no-ops when
-        graph is unavailable, expansion is disabled, or no high-confidence seeds.
+        **Standard (deep=False, default):** 1-hop expansion from high-confidence
+        seeds. Loads immediate neighbors, scores them independently against the
+        query, and adds qualifying neighbors as bonus results.
+
+        **Deep (deep=True):** Multi-hop BFS expansion. Starting from
+        high-confidence seeds, traverses up to config.graph_expansion_depth hops.
+        Each hop applies a score discount (config.graph_expansion_discount).
+        At each hop, only neighbors that clear the min_score threshold (after
+        discount) are included AND eligible to seed the next hop. This prevents
+        drift: low-relevance nodes don't propagate further. Capped at
+        config.graph_expansion_deep_max_bonus bonus results.
+
+        Both modes:
+        - Do NOT displace or alter the top-K results
+        - Gracefully no-op when graph is unavailable, expansion is disabled,
+          or no high-confidence seeds
+        - All bonus results are flagged with graph_expanded=True
 
         Args:
             results: Finalized top-K SearchResult list (post-MMR).
@@ -270,10 +282,43 @@ class RetrievalEngine:
             return []
 
         top_k_files = {r.source_file for r in results}
-        bonus: list[SearchResult] = []
         seen_files: set[str] = set(top_k_files)
 
+        if self.config.graph_expansion_deep:
+            return self._deep_graph_expansion(
+                seeds=seeds,
+                query_embedding=query_embedding,
+                graph=graph,
+                lookup=lookup,
+                seen_files=seen_files,
+                min_score=min_score,
+                structural_bonus=structural_bonus,
+            )
+        else:
+            return self._shallow_graph_expansion(
+                seeds=seeds,
+                query_embedding=query_embedding,
+                graph=graph,
+                lookup=lookup,
+                seen_files=seen_files,
+                min_score=min_score,
+                structural_bonus=structural_bonus,
+            )
+
+    def _shallow_graph_expansion(
+        self,
+        seeds: list[SearchResult],
+        query_embedding: list[float],
+        graph,
+        lookup: GraphLookup,
+        seen_files: set[str],
+        min_score: float,
+        structural_bonus: float,
+    ) -> list[SearchResult]:
+        """Original 1-hop graph expansion."""
+        bonus: list[SearchResult] = []
         total_candidates = 0
+
         for seed in seeds:
             file_path = seed.source_file
             neighbor_fps = lookup.get_neighbor_file_paths(file_path, graph)
@@ -283,68 +328,157 @@ class RetrievalEngine:
                     continue
 
                 total_candidates += 1
-
-                # Load primary chunk (chunk_index=0) for the neighbor file
-                neighbor_chunks_by_fp = self.store.get_chunks_by_file_paths([n_fp])
-                if not neighbor_chunks_by_fp or n_fp not in neighbor_chunks_by_fp:
-                    continue
-
-                fp_chunks = neighbor_chunks_by_fp[n_fp]
-                # Select primary chunk (chunk_index=0 preferred)
-                primary_chunk = next(
-                    (nc for nc in fp_chunks if nc.get("chunk_index", 0) == 0),
-                    None,
+                result = self._score_neighbor(
+                    n_fp, query_embedding, min_score, structural_bonus,
                 )
-                if not primary_chunk:
-                    continue
-
-                chunk_id = primary_chunk["id"]
-
-                # Load neighbor embedding (primary chunk)
-                neighbor_embeddings = self._load_embeddings_for_chunks([chunk_id])
-                if chunk_id not in neighbor_embeddings:
-                    continue
-
-                neighbor_emb = neighbor_embeddings[chunk_id]
-
-                # Independent cosine similarity (embeddings are normalized, dot = cosine)
-                cosine_sim = float(np.dot(query_embedding, neighbor_emb))
-
-                if cosine_sim < min_score:
-                    logger.debug(
-                        "graph_expansion | neighbor '%s' rejected (cosine=%.4f < min_score=%.2f)",
-                        n_fp, cosine_sim, min_score,
-                    )
-                    continue
-
-                final_score = cosine_sim * structural_bonus
-
-                tags = _parse_tags(primary_chunk.get("tags", "[]"))
-
-                bonus_result = SearchResult(
-                    text=primary_chunk["content"],
-                    source_file=primary_chunk.get("file_path", n_fp),
-                    id=primary_chunk.get("prov_id"),
-                    content_hash=primary_chunk.get("content_hash"),
-                    verified_at=primary_chunk.get("verified_at"),
-                    score=round(final_score, 4),
-                    type=primary_chunk.get("type"),
-                    tags=tags,
-                    chunk_index=primary_chunk.get("chunk_index", 0),
-                    title=primary_chunk.get("title"),
-                    graph_expanded=True,
-                )
-
-                bonus.append(bonus_result)
-                seen_files.add(n_fp)
+                if result:
+                    bonus.append(result)
+                    seen_files.add(n_fp)
 
         bonus_files = [r.source_file for r in bonus]
         logger.info(
-            "graph_expansion | candidates=%d bonus=%d bonus_files=%s",
+            "graph_expansion(shallow) | candidates=%d bonus=%d bonus_files=%s",
             total_candidates, len(bonus), bonus_files,
         )
-
         return bonus
+
+    def _deep_graph_expansion(
+        self,
+        seeds: list[SearchResult],
+        query_embedding: list[float],
+        graph,
+        lookup: GraphLookup,
+        seen_files: set[str],
+        min_score: float,
+        structural_bonus: float,
+    ) -> list[SearchResult]:
+        """Multi-hop BFS graph expansion with per-hop score decay.
+
+        BFS frontier starts with seed file_paths. At each hop:
+        1. Expand all frontier nodes to their 1-hop neighbors
+        2. Score each unseen neighbor independently against the query
+        3. Apply discount^hop to the structural bonus
+        4. Only neighbors clearing min_score (after discount) join the
+           bonus list AND become seeds for the next hop
+        5. Stop at max depth or when bonus cap is reached
+        """
+        max_depth = self.config.graph_expansion_depth
+        max_bonus = self.config.graph_expansion_deep_max_bonus
+        discount = self.config.graph_expansion_discount
+
+        bonus: list[SearchResult] = []
+        total_candidates = 0
+
+        # BFS frontier: start with seed file paths
+        frontier: list[str] = [s.source_file for s in seeds]
+
+        for hop in range(1, max_depth + 1):
+            if len(bonus) >= max_bonus:
+                break
+
+            hop_discount = discount ** hop
+            next_frontier: list[str] = []
+
+            for fp in frontier:
+                neighbor_fps = lookup.get_neighbor_file_paths(fp, graph)
+
+                for n_fp in neighbor_fps:
+                    if n_fp in seen_files:
+                        continue
+
+                    total_candidates += 1
+                    seen_files.add(n_fp)  # mark seen immediately to prevent re-visit
+
+                    result = self._score_neighbor(
+                        n_fp, query_embedding, min_score,
+                        structural_bonus * hop_discount,
+                    )
+                    if result:
+                        bonus.append(result)
+                        # This neighbor qualifies — it can seed the next hop
+                        next_frontier.append(n_fp)
+
+                        if len(bonus) >= max_bonus:
+                            break
+
+                if len(bonus) >= max_bonus:
+                    break
+
+            frontier = next_frontier
+            if not frontier:
+                break
+
+            logger.debug(
+                "graph_expansion(deep) | hop=%d discount=%.3f frontier=%d bonus_so_far=%d",
+                hop, hop_discount, len(frontier), len(bonus),
+            )
+
+        bonus_files = [r.source_file for r in bonus]
+        logger.info(
+            "graph_expansion(deep) | depth=%d candidates=%d bonus=%d bonus_files=%s",
+            max_depth, total_candidates, len(bonus), bonus_files,
+        )
+        return bonus
+
+    def _score_neighbor(
+        self,
+        file_path: str,
+        query_embedding: list[float],
+        min_score: float,
+        effective_bonus: float,
+    ) -> SearchResult | None:
+        """Load, embed-score, and build a SearchResult for a neighbor file.
+
+        The min_score check is applied to the *final* score (cosine_sim × effective_bonus),
+        not the raw cosine similarity alone. This ensures that per-hop decay in
+        deep expansion is reflected in the filtering threshold.
+
+        Returns None if the neighbor can't be loaded or doesn't clear min_score.
+        """
+        neighbor_chunks_by_fp = self.store.get_chunks_by_file_paths([file_path])
+        if not neighbor_chunks_by_fp or file_path not in neighbor_chunks_by_fp:
+            return None
+
+        fp_chunks = neighbor_chunks_by_fp[file_path]
+        primary_chunk = next(
+            (nc for nc in fp_chunks if nc.get("chunk_index", 0) == 0),
+            None,
+        )
+        if not primary_chunk:
+            return None
+
+        chunk_id = primary_chunk["id"]
+        neighbor_embeddings = self._load_embeddings_for_chunks([chunk_id])
+        if chunk_id not in neighbor_embeddings:
+            return None
+
+        neighbor_emb = neighbor_embeddings[chunk_id]
+        cosine_sim = float(np.dot(query_embedding, neighbor_emb))
+        final_score = cosine_sim * effective_bonus
+
+        if final_score < min_score:
+            logger.debug(
+                "graph_expansion | neighbor '%s' rejected (final=%.4f < min_score=%.2f, "
+                "cosine=%.4f, bonus=%.3f)",
+                file_path, final_score, min_score, cosine_sim, effective_bonus,
+            )
+            return None
+
+        tags = _parse_tags(primary_chunk.get("tags", "[]"))
+
+        return SearchResult(
+            text=primary_chunk["content"],
+            source_file=primary_chunk.get("file_path", file_path),
+            id=primary_chunk.get("prov_id"),
+            content_hash=primary_chunk.get("content_hash"),
+            verified_at=primary_chunk.get("verified_at"),
+            score=round(final_score, 4),
+            type=primary_chunk.get("type"),
+            tags=tags,
+            chunk_index=primary_chunk.get("chunk_index", 0),
+            title=primary_chunk.get("title"),
+            graph_expanded=True,
+        )
 
     def _load_embeddings_for_chunks(self, chunk_ids: list[int]) -> dict[int, list[float]]:
         """Load embedding vectors for MMR or graph expansion scoring.

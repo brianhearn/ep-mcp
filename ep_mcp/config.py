@@ -59,6 +59,13 @@ class RetrievalConfig(BaseModel):
     graph_expansion_confidence_threshold: float = 0.38
     graph_expansion_structural_bonus: float = 1.0
 
+    # Deep graph traversal — multi-hop BFS expansion (opt-in)
+    # When enabled, graph expansion uses BFS up to graph_expansion_depth hops
+    # with per-hop score decay (graph_expansion_discount per hop).
+    # Max bonus results capped at graph_expansion_deep_max_bonus.
+    graph_expansion_deep: bool = False
+    graph_expansion_deep_max_bonus: int = 5
+
     # Length penalty — discount very short chunks (stubs, headings, nav artefacts)
     length_penalty_threshold: int = 80   # chars; chunks below this are penalized
     length_penalty_factor: float = 0.15  # multiplicative penalty (score *= 1 - factor)
