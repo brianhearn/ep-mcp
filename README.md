@@ -10,7 +10,9 @@ An MCP server that turns any ExpertPack into a live, queryable knowledge service
 
 ## Features
 
-- **Schema-aware hybrid retrieval**: BM25 + vector search (sqlite-vec), metadata boosting, MMR re-ranking
+- **Schema-aware hybrid retrieval**: BM25 + vector search (sqlite-vec), metadata boosting, MMR re-ranking, adaptive threshold filtering, length penalty
+- **Intent-aware routing**: Automatic query classification (ENTITY/HOW/WHY/WHEN/GENERAL) adjusts vector/BM25 fusion weights per query — no LLM required
+- **Deep graph traversal**: Optional multi-hop BFS expansion over knowledge graph edges with per-hop score decay and drift prevention
 - **Provenance-first**: Every result includes `id`, `content_hash`, `verified_at`, `source_file`
 - **EP-native chunking**: Files are treated as atomic retrieval units (split at `##` only for oversized content)
 - **Frontmatter aware**: Strips metadata for embedding, extracts `type`, `tags`, etc. for boosting/filtering
@@ -79,9 +81,20 @@ retrieval:
   graph_expansion_min_score: 0.20
   graph_expansion_confidence_threshold: 0.38
   graph_expansion_structural_bonus: 1.0
+
+  # New in latest:
+  adaptive_threshold: true
+  activation_floor: 0.15
+  score_ratio: 0.55
+  absolute_floor: 0.10
+  length_penalty_threshold: 80
+  length_penalty_factor: 0.15
+  intent_routing_enabled: true
+  graph_expansion_deep: false
+  graph_expansion_deep_max_bonus: 5
 ```
 
-**Note:** All `retrieval:` fields are optional — defaults shown above.
+**Note:** All `retrieval:` fields are optional — defaults shown above. See [ARCHITECTURE.md §5](ARCHITECTURE.md) for the full 8-step pipeline.
 
 ### Running
 

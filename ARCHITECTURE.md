@@ -1,7 +1,7 @@
 # ExpertPack MCP — Architecture
 
-**Version:** 0.2
-**Date:** 2026-04-14
+**Version:** 0.3
+**Date:** 2026-04-16
 **Authors:** Brian Hearn, EasyBot
 **Prerequisite:** [VISION.md](VISION.md) v0.4
 
@@ -94,8 +94,9 @@ ep_mcp/
 │   └── chunker.py         # EP-native chunking (file = chunk, oversized splitting)
 ├── retrieval/
 │   ├── __init__.py
-│   ├── engine.py          # Hybrid search orchestration (vector + BM25 + MMR)
-│   ├── scorer.py          # Score fusion, MMR re-ranking, metadata boosting
+│   ├── engine.py          # Hybrid search orchestration (vector + BM25 + MMR + intent routing)
+│   ├── intent.py          # Intent classification (ENTITY/HOW/WHY/WHEN/GENERAL)
+│   ├── scorer.py          # Score fusion, MMR re-ranking, adaptive threshold, length penalty
 │   └── models.py          # Pydantic models: SearchResult, SearchRequest
 ├── embeddings/
 │   ├── __init__.py
@@ -370,78 +371,137 @@ Cache is invalidated when the embedding model changes. Individual entries are in
 
 ```
 Query (string)
-    │
-    ▼
-┌─────────────────┐     ┌─────────────────┐
-│  Vector Search   │     │   BM25 Search   │
-│  (sqlite-vec)    │     │   (FTS5)        │
-│                  │     │                  │
-│  query → embed   │     │  query → tokens  │
-│  → ANN search    │     │  → BM25 rank     │
-│  → top K×M       │     │  → top K×M       │
-└────────┬─────────┘     └────────┬─────────┘
-         │                        │
-         ▼                        ▼
-    ┌─────────────────────────────────┐
-    │        Score Fusion             │
-    │                                 │
-    │  hybrid_score =                 │
-    │    (vector_weight × vec_score)  │
-    │  + (text_weight × bm25_score)  │
-    │                                 │
-    │  Default: 0.7 vec + 0.3 bm25   │
-    └────────────────┬────────────────┘
-                     │
-                     ▼
-    ┌─────────────────────────────────┐
-    │     Metadata Boosting           │
-    │                                 │
-    │  +boost if type matches filter  │
-    │  +boost if tags match filter    │
-    │  +boost if in context.always    │
-    └────────────────┬────────────────┘
-                     │
-                     ▼
-    ┌─────────────────────────────────┐
-    │    MMR Re-ranking               │
-    │                                 │
-    │  Maximal Marginal Relevance     │
-    │  λ=0.7 (relevance vs diversity) │
-    │  Reduces redundant chunks       │
-    └────────────────┬────────────────┘
-                     │
-                     ▼
-    Top K results (default K=10)
+    |
+    v
++-------------------------------------+
+|  1. Intent Classification           |
+|                                     |
+|  Regex heuristics -> intent type    |
+|  ENTITY/HOW/WHY/WHEN/GENERAL       |
+|  -> adaptive vector/BM25 weights    |
++----------------+--------------------+
+                 |
+    +------------+------------+
+    v                         v
++--------------+     +--------------+
+| 2a. Vector   |     | 2b. BM25     |
+| (sqlite-vec) |     | (FTS5)       |
+| -> top KxM   |     | -> top KxM   |
++------+-------+     +------+-------+
+       |                     |
+       v                     v
++-------------------------------------+
+|  3. Score Fusion                    |
+|     (intent-adjusted weights)       |
+|                                     |
+|  hybrid = vw x vec + tw x bm25     |
+|  Defaults: 0.7/0.3 (GENERAL)       |
+|  ENTITY: 0.45/0.55                  |
+|  HOW/WHY: 0.80/0.20                |
+|  WHEN: 0.40/0.60                    |
++----------------+--------------------+
+                 |
+                 v
++-------------------------------------+
+|  4. Adaptive Threshold Filter       |
+|                                     |
+|  best < activation_floor -> empty   |
+|  Else: keep within score_ratio of   |
+|  best, floor at absolute_floor      |
+|  (Legacy flat min_score available)  |
++----------------+--------------------+
+                 |
+                 v
++-------------------------------------+
+|  5. Metadata Boosting               |
+|                                     |
+|  +0.05 type match, +0.03/tag,      |
+|  +0.02 context.always tier          |
++----------------+--------------------+
+                 |
+                 v
++-------------------------------------+
+|  6. Length Penalty                   |
+|                                     |
+|  Chunks < 80 chars: score x 0.85   |
+|  Discounts stubs/headings/nav       |
++----------------+--------------------+
+                 |
+                 v
++-------------------------------------+
+|  7. MMR Re-ranking -> top-K         |
+|                                     |
+|  lambda=0.7 (relevance vs diverse)  |
++----------------+--------------------+
+                 |
+                 v
++-------------------------------------+
+|  8. Post-top-K Graph Expansion      |
+|                                     |
+|  Shallow: 1-hop from seeds          |
+|  Deep (opt-in): multi-hop BFS      |
+|    -> discount^hop per level        |
+|    -> only qualifying nodes seed    |
+|      next hop (drift prevention)    |
+|    -> capped at max_bonus results   |
+|  Bonus flagged graph_expanded=True  |
++----------------+--------------------+
+                 |
+                 v
+    Top K + bonus graph neighbors
 ```
 
 ### 5.2 Search Configuration
 
-Retrieval parameters are set at the server level (not per-query). These match the proven config from help bot eval Run 12:
+Retrieval parameters are set at the server level (not per-query):
 
 ```python
 @dataclass
 class RetrievalConfig:
-    """Retrieval pipeline configuration."""
-    
-    # Hybrid search weights
+    # Hybrid search weights (defaults; overridden by intent routing when enabled)
     vector_weight: float = 0.7
     text_weight: float = 0.3
-    
-    # Candidate multiplier: fetch N × max_results candidates before fusion
+
+    # Candidate multiplier: fetch N x max_results candidates before fusion
     candidate_multiplier: int = 8
-    
+
     # MMR
     mmr_enabled: bool = True
-    mmr_lambda: float = 0.7        # Balance relevance vs diversity
-    
-    # Scoring
-    min_score: float = 0.35        # Minimum hybrid score to include
-    default_max_results: int = 10  # Default K if not specified in query
-    
+    mmr_lambda: float = 0.7
+
+    # Legacy scoring (deprecated: use adaptive threshold below)
+    min_score: float = 0.35
+    default_max_results: int = 10
+
+    # Adaptive threshold filtering (replaces flat min_score)
+    adaptive_threshold: bool = True
+    activation_floor: float = 0.15
+    score_ratio: float = 0.55
+    absolute_floor: float = 0.10
+
     # Metadata boosting
-    type_match_boost: float = 0.05  # Boost when type filter matches
-    tag_match_boost: float = 0.03   # Boost per matching tag
-    always_tier_boost: float = 0.02 # Boost for context.always files
+    type_match_boost: float = 0.05
+    tag_match_boost: float = 0.03
+    always_tier_boost: float = 0.02
+
+    # Length penalty: discount very short chunks
+    length_penalty_threshold: int = 80
+    length_penalty_factor: float = 0.15
+
+    # Intent-aware routing
+    intent_routing_enabled: bool = True
+
+    # Graph expansion (shallow)
+    graph_expansion_enabled: bool = False
+    graph_expansion_depth: int = 1
+    graph_expansion_discount: float = 0.85
+    graph_expansion_min_score: float = 0.20
+    graph_expansion_confidence_threshold: float = 0.38
+    graph_expansion_structural_bonus: float = 1.0
+
+    # Deep graph traversal (multi-hop BFS, opt-in)
+    graph_expansion_deep: bool = False
+    graph_expansion_deep_max_bonus: int = 5
 ```
 
 ### 5.3 Search Result Model
@@ -449,7 +509,6 @@ class RetrievalConfig:
 ```python
 @dataclass
 class SearchResult:
-    """A single search result returned by ep_search."""
     text: str               # Content (frontmatter stripped)
     source_file: str        # Path within pack
     id: str | None          # Provenance ID
@@ -460,21 +519,63 @@ class SearchResult:
     tags: list[str]         # File tags
     chunk_index: int        # 0 for whole-file chunks
     title: str | None       # File title
+    graph_expanded: bool    # True if added via graph expansion
 ```
 
-### 5.4 Graph-Aware Retrieval (Post-MVP)
+### 5.4 Graph-Aware Retrieval
 
-When `_graph.yaml` is present, the retrieval engine can optionally expand results by following graph edges:
+When `_graph.yaml` is present and `graph_expansion_enabled: true`, the retrieval engine expands results by following graph edges after top-K is finalized (post-MMR, additive only).
 
-1. Run standard hybrid search → get top K results
-2. For each result, look up adjacent nodes in the graph (wikilink, related, context edges)
-3. If adjacent nodes aren't already in results and meet a relevance threshold, include them as "related" results with a lower score
-4. MMR re-rank the combined set
+**Shallow mode** (default when expansion is enabled):
+1. Identify high-confidence seeds from top-K (score >= `graph_expansion_confidence_threshold`)
+2. Load 1-hop neighbors via `GraphLookup` -> `PackGraph.neighbors()`
+3. Score each unseen neighbor independently (cosine similarity against query embedding)
+4. Apply `graph_expansion_structural_bonus` multiplier
+5. Gate on `graph_expansion_min_score` (applied to final score, not raw cosine)
+6. Append qualifying neighbors as bonus results with `graph_expanded=True`
 
-This is architecturally supported from day one (graph is loaded in the Pack model) but not wired into the search pipeline for MVP.
+**Deep mode** (`graph_expansion_deep: true`):
+Multi-hop BFS expansion using the same seed selection, but traversing up to `graph_expansion_depth` hops:
+1. BFS frontier starts with seed file paths
+2. At each hop, expand all frontier nodes to their 1-hop neighbors
+3. Apply `graph_expansion_discount`^hop to the structural bonus (per-hop decay)
+4. Gate on `graph_expansion_min_score` against the discounted final score
+5. Only qualifying neighbors join the bonus list AND seed the next hop (drift prevention)
+6. Stop at max depth, empty frontier, or `graph_expansion_deep_max_bonus` cap
 
+Both modes:
+- Do NOT displace or alter top-K results (additive only)
+- Only include primary chunks (chunk_index=0) per neighbor file
+- Gracefully no-op when graph is unavailable or expansion is disabled
 
----
+### 5.5 Intent-Aware Routing
+
+The `IntentClassifier` (in `retrieval/intent.py`) classifies queries before search using regex heuristics. No LLM dependency.
+
+| Intent | Signal words | vector_weight | text_weight |
+|--------|-------------|---------------|-------------|
+| ENTITY | "what is", "define", "explain" | 0.45 | 0.55 |
+| HOW | "how to", "steps", "configure" | 0.80 | 0.20 |
+| WHY | "why", "reason", "difference" | 0.80 | 0.20 |
+| WHEN | "when", "version", "release" | 0.40 | 0.60 |
+| GENERAL | (fallback) | configured default | configured default |
+
+Rationale: ENTITY queries benefit from exact term matching (BM25-heavy). HOW/WHY queries benefit from semantic similarity (vector-heavy). WHEN queries need keyword/version matching (BM25-heavy).
+
+Controlled by `retrieval.intent_routing_enabled` (default: `true`). When disabled, configured `vector_weight`/`text_weight` are used for all queries.
+
+### 5.6 Adaptive Threshold Filtering
+
+Replaces the brittle flat `min_score` cutoff with a ratio-based filter that adapts to query specificity and pack characteristics.
+
+**Two-step filter:**
+1. **Activation floor** -- if the best score across all candidates is below `activation_floor` (0.15), the query is too far from anything in the pack. Return empty.
+2. **Score ratio** -- keep results within `score_ratio` (0.55) of the best score, with `absolute_floor` (0.10) as a hard minimum.
+
+This adapts naturally: a highly specific query with a 0.8 best score keeps results above 0.44. A broad query with a 0.3 best score keeps results above 0.165 (but not below 0.10).
+
+Legacy `min_score` is still respected when `adaptive_threshold: false`.
+
 
 ## 6. Embedding Provider Interface
 
@@ -1291,9 +1392,13 @@ This is the architectural boundary: EP MCP provides knowledge, domain MCP provid
 3. ✅ Implementation — Tools (ep_search, ep_list_topics, ep_graph_traverse) + basic Resources (manifest, file listing) + transport + auth
 4. ✅ Deploy — ExpertPack droplet, live at https://expertpack.ai/mcp
 5. ✅ Validation — help bot integration, eval baseline (84.1% correctness, Run 15)
-6. ⬜ **Prompts implementation** — add `prompts/pack_prompts.py`; read `mcp.prompts` from manifest; auto-discover `type: workflow` files as fallback; register via `@mcp.prompt()`
-7. ⬜ **Resources expansion** — expand `resources/pack_resources.py` to expose always-tier files and additional declared resources beyond manifest + file listing
-8. ⬜ **Instructions wiring** — update `create_pack_mcp()` in `server.py` to derive `instructions=` from `mcp.instructions` manifest field
-9. ⬜ **MCPConfig model** — add `MCPConfig` and `MCPPromptDeclaration` dataclasses to `pack/models.py`; update `pack/manifest.py` to parse `mcp` block
-10. ⬜ Domain MCP example — EZT MCP as reference implementation (EP MCP Layer 1 + EZT API tools Layer 2)
+6. ✅ Prompts implementation (1e6941b)
+7. ✅ Resources expansion (1e6941b)
+8. ✅ Instructions wiring (1e6941b)
+9. ✅ MCPConfig model (1e6941b)
+10. ✅ Adaptive threshold filtering (6845d0b)
+11. ✅ Length penalty (7a82655)
+12. ✅ Intent-aware routing (8fec6d1)
+13. ✅ Deep graph traversal (8063185)
+14. ⬜ Domain MCP example — add `prompts/pack_prompts.py`; read `mcp.prompts` from manifest; auto-discover `type: workflow` files as fallback; register via `@mcp.prompt()`
 

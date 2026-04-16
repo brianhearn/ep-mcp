@@ -24,6 +24,45 @@ pip install -e .
 - Set `api_keys` per pack. Treat these as passwords. Use the environment variable `EP_MCP_KEY_{SLUG}` to avoid committing real keys.
 - Copy `.env.example` to `.env` and populate the API keys.
 
+### Retrieval tuning
+
+All retrieval options live under the `retrieval:` block in `config.yaml`. Key options:
+
+```yaml
+retrieval:
+  # Hybrid search weights (defaults; intent routing overrides per-query)
+  vector_weight: 0.7
+  text_weight: 0.3
+  candidate_multiplier: 8
+
+  # Adaptive threshold filtering (replaces flat min_score)
+  adaptive_threshold: true
+  activation_floor: 0.15
+  score_ratio: 0.55
+  absolute_floor: 0.10
+
+  # Length penalty — discount very short chunks
+  length_penalty_threshold: 80   # chars
+  length_penalty_factor: 0.15
+
+  # Intent-aware routing — adjust vector/BM25 weights per query intent
+  intent_routing_enabled: true
+
+  # Graph expansion (shallow, 1-hop)
+  graph_expansion_enabled: false
+  graph_expansion_confidence_threshold: 0.38
+  graph_expansion_min_score: 0.20
+  graph_expansion_structural_bonus: 1.0
+
+  # Deep graph traversal (multi-hop BFS, opt-in)
+  graph_expansion_deep: false
+  graph_expansion_depth: 2       # max hops (meaningful when deep=true)
+  graph_expansion_discount: 0.85 # per-hop score decay
+  graph_expansion_deep_max_bonus: 5
+```
+
+See [ARCHITECTURE.md §5](ARCHITECTURE.md#5-retrieval-engine) for full pipeline documentation.
+
 ## 4. Running (dev)
 
 ```bash
