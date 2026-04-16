@@ -1,4 +1,4 @@
-"""Hybrid retrieval engine: vector + BM25 → fusion → boosting → MMR → post-top-K graph expansion.
+"""Hybrid retrieval engine: vector + BM25 → fusion → boosting → MMR → graph expansion → file dedup.
 
 Pipeline:
 1. Intent classification → adaptive weight selection
@@ -6,9 +6,10 @@ Pipeline:
 3. Adaptive threshold filter (ratio-based) or legacy flat min_score
 4. Metadata boosting
 5. Length penalty
-6. MMR re-ranking → top-K (finalized here, no interference from expansion)
-7. Post-top-K graph expansion (additive bonus neighbors only)
-8. Return top-K + bonus neighbors (flagged with graph_expanded=True)
+6. MMR re-ranking → top-K
+7. Graph expansion → bonus neighbors scored and merged into results by score
+8. File-level dedup → max_chunks_per_file per source file
+9. Return final top-K
 """
 
 import json
@@ -49,9 +50,10 @@ class RetrievalEngine:
     5. Adaptive threshold filter (or legacy flat min_score)
     6. Metadata boosting
     7. Length penalty
-    8. MMR re-ranking (final top-K)
-    9. Post-top-K additive graph expansion (bonus results only)
-    10. Return results
+    8. MMR re-ranking (top-K candidates)
+    9. Graph expansion → bonus neighbors merged into results by score
+    10. File-level dedup (max_chunks_per_file per source file)
+    11. Return final top-K
     """
 
     def __init__(
@@ -166,8 +168,9 @@ class RetrievalEngine:
             short_penalty=self.config.length_penalty_factor,
         )
 
-        # Step 5: MMR re-ranking → finalized top-K
+        # Step 5: MMR re-ranking → top candidates (fetch more than max_results to allow dedup)
         scored_list = sorted(fused.items(), key=lambda x: x[1], reverse=True)
+        mmr_k = max_results * max(2, self.config.max_chunks_per_file)  # fetch extra for dedup headroom
 
         if self.config.mmr_enabled and len(scored_list) > 1:
             all_chunk_ids = list(fused.keys())
@@ -175,8 +178,27 @@ class RetrievalEngine:
             scored_list = mmr_rerank(
                 scored_list, embeddings,
                 lambda_param=self.config.mmr_lambda,
-                k=max_results,
+                k=mmr_k,
             )
+        else:
+            scored_list = scored_list[:mmr_k]
+
+        # Step 5b: File-level dedup on MMR candidates → limit chunks per source file
+        if self.config.max_chunks_per_file > 0:
+            file_counts_pre: dict[str, int] = {}
+            deduped_scored: list[tuple[int, float]] = []
+            for chunk_id, score in scored_list:
+                chunk = chunks.get(chunk_id)
+                fp = chunk["file_path"] if chunk else ""
+                count = file_counts_pre.get(fp, 0)
+                if count < self.config.max_chunks_per_file:
+                    deduped_scored.append((chunk_id, score))
+                    file_counts_pre[fp] = count + 1
+            logger.debug(
+                "file_dedup(pre-build) | before=%d after=%d (max_per_file=%d)",
+                len(scored_list), len(deduped_scored), self.config.max_chunks_per_file,
+            )
+            scored_list = deduped_scored[:max_results]
         else:
             scored_list = scored_list[:max_results]
 
@@ -206,7 +228,7 @@ class RetrievalEngine:
             top_k_results.append(result)
             top_k_chunk_ids_for_lookup[chunk_id] = result
 
-        # Step 7: Post-top-K additive graph expansion
+        # Step 7: Graph expansion → score and merge bonus neighbors into result pool
         bonus_results = self._apply_graph_expansion(
             results=top_k_results,
             query_embedding=query_embedding,
@@ -214,8 +236,13 @@ class RetrievalEngine:
             min_score_override=graph_expansion_min_score,
         )
 
-        # Combine: top-K + bonus neighbors (bonus come after)
-        return top_k_results + bonus_results
+        # Merge top-K + bonus, re-sort by score descending
+        # (bonus neighbors may slot in above lower-scoring core results)
+        merged = top_k_results + bonus_results
+        merged.sort(key=lambda r: r.score, reverse=True)
+
+        # Return final top-K (file dedup already applied pre-build; bonus slots in cleanly)
+        return merged[:max_results]
 
     def _apply_graph_expansion(
         self,

@@ -51,7 +51,7 @@ class RetrievalConfig(BaseModel):
     absolute_floor: float = 0.10
     type_match_boost: float = 0.05
     tag_match_boost: float = 0.03
-    always_tier_boost: float = 0.02
+    always_tier_boost: float = 0.03
     graph_expansion_enabled: bool = False
     graph_expansion_depth: int = 1
     graph_expansion_discount: float = 0.85
@@ -72,6 +72,10 @@ class RetrievalConfig(BaseModel):
 
     # Intent-aware routing — adjust vector/BM25 weights based on query intent
     intent_routing_enabled: bool = True
+
+    # File-level deduplication — max chunks returned from the same source file
+    # Prevents a large/chunky file from monopolizing the top-K results
+    max_chunks_per_file: int = 2
 
 
 class ServerConfig(BaseModel):
