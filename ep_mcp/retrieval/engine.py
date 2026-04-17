@@ -1,4 +1,4 @@
-"""Hybrid retrieval engine: vector + BM25 → fusion → boosting → MMR → graph expansion → file dedup.
+"""Hybrid retrieval engine: vector + BM25 → fusion → boosting → [graph widen] → MMR → graph expansion → reserved-slot merge.
 
 Pipeline:
 1. Intent classification → adaptive weight selection
@@ -6,10 +6,16 @@ Pipeline:
 3. Adaptive threshold filter (ratio-based) or legacy flat min_score
 4. Metadata boosting
 5. Length penalty
+5b. [OPT] Pre-MMR graph widen: pull neighbors of high-confidence fused candidates
+    into the pool BEFORE MMR so they compete on merit (config.graph_widen_enabled).
 6. MMR re-ranking → top-K
-7. Graph expansion → bonus neighbors scored and merged into results by score
-8. File-level dedup → max_chunks_per_file per source file
-9. Return final top-K
+7. File-level dedup → max_chunks_per_file per source file
+8. Post-K graph expansion → bonus neighbors scored
+9. Reserved-slot merge: guarantee `graph_expansion_reserved_slots` slots for the
+   best graph-expanded bonuses when they'd otherwise lose the merge-sort. Falls
+   back to legacy merge-sort if reserved_slots=0.
+10. Cross-encoder reranker (if configured)
+11. Return final top-K
 """
 
 import json
@@ -24,6 +30,7 @@ from ..embeddings.base import EmbeddingProvider
 from ..index.sqlite_store import SQLiteStore
 from ..pack.models import Pack
 from .graph_helpers import GraphLookup
+from .reranker import Reranker
 from .intent import IntentClassifier, QueryIntent
 from .models import SearchRequest, SearchResult
 from .scorer import (
@@ -64,11 +71,13 @@ class RetrievalEngine:
         embedding_provider: EmbeddingProvider,
         config: RetrievalConfig | None = None,
         graph_lookup: GraphLookup | None = None,
+        reranker: "Reranker | None" = None,
     ):
         self.pack = pack
         self.store = store
         self.provider = embedding_provider
         self.config = config or RetrievalConfig()
+        self._reranker = reranker
 
         # Pre-compute always-tier files
         self._always_files = set(self.pack.manifest.context.always)
@@ -209,6 +218,24 @@ class RetrievalEngine:
         # Debug: log top-20 after boosts + penalty
         _log_top_chunks("after_boosts", fused, chunks_store=self.store, top_n=20)
 
+        # Step 5b: Pre-MMR graph widen — pull graph neighbors of top pre-cutoff
+        # files into the candidate pool as regular candidates. Unlike post-K
+        # graph expansion (which appends discounted bonuses), this widen lets
+        # related files compete for top-K slots on their raw cosine score.
+        # Targets the secondary-file miss pattern (e.g. interface files for
+        # workflow queries).
+        if (
+            self.config.graph_widen_enabled
+            and self.pack.graph is not None
+            and self._graph_lookup is not None
+        ):
+            fused, chunks = self._graph_widen_candidates(
+                fused, chunks, query_embedding,
+                max_seeds=self.config.graph_widen_max_seeds,
+                min_seed_score=self.config.graph_widen_min_seed_score,
+                min_neighbor_score=self.config.graph_widen_min_neighbor_score,
+            )
+
         # Step 5: MMR re-ranking → top candidates (fetch more than max_results to allow dedup)
         scored_list = sorted(fused.items(), key=lambda x: x[1], reverse=True)
         mmr_k = max_results * max(2, self.config.max_chunks_per_file)  # fetch extra for dedup headroom
@@ -279,10 +306,29 @@ class RetrievalEngine:
             min_score_override=graph_expansion_min_score,
         )
 
-        # Merge top-K + bonus, re-sort by score descending
-        # (bonus neighbors may slot in above lower-scoring core results)
-        merged = top_k_results + bonus_results
-        merged.sort(key=lambda r: r.score, reverse=True)
+        # Step 7b: Merge top-K + bonus with reserved-slot guarantee.
+        #
+        # Legacy behavior (reserved_slots=0): concat + sort by score,
+        # truncate to max_results. Bonus neighbors compete directly;
+        # because structural_bonus typically discounts them below core
+        # results, they rarely surface. Secondary-file misses persist.
+        #
+        # Reserved-slot behavior (reserved_slots>0): guarantee up to N
+        # slots for the best graph-expanded bonuses, filled only with
+        # files NOT already in the core result set. This turns graph
+        # expansion into a real candidate-widener for secondary files.
+        reserved = self.config.graph_expansion_reserved_slots
+        if reserved > 0 and bonus_results:
+            merged = self._reserved_slot_merge(
+                top_k_results, bonus_results, max_results, reserved,
+            )
+        else:
+            merged = top_k_results + bonus_results
+            merged.sort(key=lambda r: r.score, reverse=True)
+
+        # Step 8: Cross-encoder rerank (second-pass precision layer)
+        if self._reranker is not None:
+            merged = self._reranker.rerank(request.query, merged)
 
         # Return final top-K (file dedup already applied pre-build; bonus slots in cleanly)
         return merged[:max_results]
@@ -645,6 +691,162 @@ class RetrievalEngine:
             title=primary_chunk.get("title"),
             graph_expanded=True,
         )
+
+    def _graph_widen_candidates(
+        self,
+        fused: dict[int, float],
+        chunks: dict[int, dict],
+        query_embedding: list[float],
+        max_seeds: int = 5,
+        min_seed_score: float = 0.38,
+        min_neighbor_score: float = 0.25,
+    ) -> tuple[dict[int, float], dict[int, dict]]:
+        """Widen the candidate pool with graph neighbors BEFORE MMR.
+
+        Identifies the top `max_seeds` files (post-boosting, pre-MMR) that
+        clear `min_seed_score`, pulls their 1-hop graph neighbors, scores each
+        neighbor's primary chunk via cosine similarity against the query
+        embedding, and injects qualifying neighbors as regular candidates.
+
+        Unlike post-K graph expansion (which appends structurally-discounted
+        bonus results), this widen produces candidates that flow through MMR
+        and the normal top-K cutoff with their raw cosine score — letting
+        them compete on merit.
+
+        Targets the secondary-file miss pattern: the right file exists and
+        is graph-linked to a retrieved file, but never entered the vector
+        candidate pool because the vector search didn't rank it high enough.
+
+        Returns the augmented (fused, chunks) pair. Existing candidates are
+        untouched; only new neighbor candidates are added.
+        """
+        graph = self.pack.graph
+        lookup = self._graph_lookup
+        if graph is None or lookup is None:
+            return fused, chunks
+
+        # Identify seed files (top-N distinct files by score, clearing threshold)
+        ranked = sorted(fused.items(), key=lambda x: x[1], reverse=True)
+        seed_files: list[str] = []
+        for cid, score in ranked:
+            if score < min_seed_score:
+                break
+            chunk = chunks.get(cid)
+            if not chunk:
+                continue
+            fp = chunk.get("file_path")
+            if fp and fp not in seed_files:
+                seed_files.append(fp)
+            if len(seed_files) >= max_seeds:
+                break
+
+        if not seed_files:
+            logger.info(
+                "[PIPELINE] graph_widen | no seeds cleared min_seed_score=%.2f",
+                min_seed_score,
+            )
+            return fused, chunks
+
+        # Collect candidate neighbor file paths (exclude files already in pool)
+        existing_files = {
+            chunks[cid].get("file_path") for cid in fused if cid in chunks
+        }
+        existing_files.discard(None)
+        neighbor_candidates: set[str] = set()
+        for fp in seed_files:
+            for n_fp in lookup.get_neighbor_file_paths(fp, graph):
+                if n_fp not in existing_files:
+                    neighbor_candidates.add(n_fp)
+
+        if not neighbor_candidates:
+            logger.info(
+                "[PIPELINE] graph_widen | seeds=%d, no new neighbors",
+                len(seed_files),
+            )
+            return fused, chunks
+
+        # Load primary chunks + embeddings for all neighbor files in one batch
+        neighbor_chunks_by_fp = self.store.get_chunks_by_file_paths(list(neighbor_candidates))
+
+        # Collect all primary chunk ids to load embeddings in one shot
+        primary_by_fp: dict[str, dict] = {}
+        for n_fp, fp_chunks in neighbor_chunks_by_fp.items():
+            primary = next((c for c in fp_chunks if c.get("chunk_index", 0) == 0), None)
+            if primary:
+                primary_by_fp[n_fp] = primary
+
+        if not primary_by_fp:
+            return fused, chunks
+
+        primary_chunk_ids = [p["id"] for p in primary_by_fp.values()]
+        neighbor_embs = self._load_embeddings_for_chunks(primary_chunk_ids)
+
+        added = 0
+        added_files: list[str] = []
+        for n_fp, primary in primary_by_fp.items():
+            cid = primary["id"]
+            if cid not in neighbor_embs:
+                continue
+            cosine = float(np.dot(query_embedding, neighbor_embs[cid]))
+            if cosine < min_neighbor_score:
+                continue
+            # Inject as a regular candidate (raw cosine, no structural discount)
+            fused[cid] = cosine
+            chunks[cid] = primary
+            added += 1
+            added_files.append(n_fp)
+
+        logger.info(
+            "[PIPELINE] graph_widen | seeds=%d neighbor_candidates=%d added=%d added_files=%s",
+            len(seed_files), len(neighbor_candidates), added, added_files,
+        )
+        return fused, chunks
+
+    def _reserved_slot_merge(
+        self,
+        core: list[SearchResult],
+        bonus: list[SearchResult],
+        max_results: int,
+        reserved_slots: int,
+    ) -> list[SearchResult]:
+        """Merge core top-K with graph-expanded bonuses, reserving slots for bonuses.
+
+        Guarantees up to `reserved_slots` final slots for the best graph-expanded
+        bonus results (files not already in core), even when their structurally-
+        discounted score would lose a raw merge-sort competition.
+
+        Layout:
+          final[0..core_slots-1]     → top core results by score
+          final[core_slots..total-1] → top reserved-slot bonuses by score
+
+        Where core_slots = max_results - min(reserved_slots, len(unique_bonuses)).
+        If fewer bonuses qualify than reserved slots, core expands to fill the gap.
+
+        Within each section, results are sorted by score. The merged list is
+        returned with core results first, then bonus results — NOT re-sorted
+        globally, because the whole point is to guarantee bonus representation.
+        """
+        # Deduplicate bonus files against core files
+        core_files = {r.source_file for r in core}
+        unique_bonuses = [b for b in bonus if b.source_file not in core_files]
+
+        # How many bonus slots can we actually fill?
+        actual_reserved = min(reserved_slots, len(unique_bonuses), max_results)
+        core_slots = max_results - actual_reserved
+
+        # Take top core_slots core results (already score-sorted upstream, but be safe)
+        core_sorted = sorted(core, key=lambda r: r.score, reverse=True)[:core_slots]
+
+        # Take top actual_reserved bonuses by score
+        bonus_sorted = sorted(unique_bonuses, key=lambda r: r.score, reverse=True)[:actual_reserved]
+
+        logger.info(
+            "[PIPELINE] reserved_slot_merge | core=%d/%d bonus=%d/%d (reserved=%d)",
+            len(core_sorted), len(core), len(bonus_sorted), len(unique_bonuses),
+            reserved_slots,
+        )
+
+        return core_sorted + bonus_sorted
 
     def _load_embeddings_for_chunks(self, chunk_ids: list[int]) -> dict[int, list[float]]:
         """Load embedding vectors for MMR or graph expansion scoring.

@@ -17,11 +17,13 @@ from .auth import APIKeyAuth
 from .config import ServerConfig
 from .embeddings.base import EmbeddingProvider
 from .embeddings.gemini import GeminiEmbeddingProvider
+from .embeddings.ollama import OllamaEmbeddingProvider
 from .index.manager import IndexManager
 from .index.sqlite_store import SQLiteStore
 from .pack.loader import load_pack
 from .pack.models import Pack
 from .retrieval.engine import RetrievalEngine
+from .retrieval.reranker import Reranker
 from .retrieval.graph_helpers import GraphLookup
 from .prompts.pack_prompts import register_prompts
 from .resources.pack_resources import register_resources
@@ -48,6 +50,9 @@ def create_embedding_provider(config: ServerConfig) -> EmbeddingProvider:
     emb = config.embedding
     if emb.provider == "gemini":
         return GeminiEmbeddingProvider(model=emb.model)
+    if emb.provider == "ollama":
+        base_url = getattr(emb, "base_url", "http://localhost:11434")
+        return OllamaEmbeddingProvider(model=emb.model, base_url=base_url)
     raise ValueError(f"Unsupported embedding provider: {emb.provider}")
 
 
@@ -236,7 +241,13 @@ async def init_pack(
             retrieval_cfg = retrieval_cfg.model_copy(update=overrides)
             logger.info("Pack '%s' applying retrieval overrides: %s", slug, overrides)
 
-    engine = RetrievalEngine(pack, store, provider, retrieval_cfg, graph_lookup)
+    reranker_cfg = config.reranker
+    reranker = Reranker(
+        model_name=reranker_cfg.model,
+        candidate_pool_size=reranker_cfg.candidate_pool_size,
+        enabled=reranker_cfg.enabled,
+    )
+    engine = RetrievalEngine(pack, store, provider, retrieval_cfg, graph_lookup, reranker=reranker)
     mcp = create_pack_mcp(slug, pack, engine, graph_lookup)
 
     return PackInstance(pack=pack, store=store, engine=engine, mcp=mcp, index_manager=manager)

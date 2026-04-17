@@ -33,6 +33,15 @@ class EmbeddingConfig(BaseModel):
     azure_deployment: str | None = None
 
 
+
+
+class RerankerConfig(BaseModel):
+    """Cross-encoder reranker configuration (second-pass precision layer)."""
+
+    enabled: bool = False
+    model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    candidate_pool_size: int = 20  # how many candidates to rerank before final slice
+
 class RetrievalConfig(BaseModel):
     """Retrieval pipeline configuration."""
 
@@ -77,6 +86,25 @@ class RetrievalConfig(BaseModel):
     # Prevents a large/chunky file from monopolizing the top-K results
     max_chunks_per_file: int = 2
 
+    # Reserved slots for graph-expanded bonus results.
+    # When > 0, the final top-K is structured as:
+    #   max_results - reserved_slots  → core MMR results
+    #   reserved_slots                → best graph-expanded bonuses
+    # This guarantees related files (e.g. interface files for workflow queries,
+    # linked concept files) get into the result set even when the structural_bonus
+    # discount would make them lose a raw merge-sort against core results.
+    # Set to 0 to disable (use legacy merge-sort behavior).
+    graph_expansion_reserved_slots: int = 2
+
+    # Pre-MMR graph widening — pull neighbors of high-confidence fused candidates
+    # into the candidate pool BEFORE MMR re-ranking, so they compete on their own
+    # merit through the full pipeline (not just as discounted post-K bonuses).
+    # Disabled by default because it requires more embedding lookups per query.
+    graph_widen_enabled: bool = False
+    graph_widen_max_seeds: int = 5
+    graph_widen_min_seed_score: float = 0.38
+    graph_widen_min_neighbor_score: float = 0.25
+
 
 class ServerConfig(BaseModel):
     """Top-level server configuration."""
@@ -87,6 +115,7 @@ class ServerConfig(BaseModel):
     packs: list[PackConfig] = Field(default_factory=list)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
+    reranker: RerankerConfig = Field(default_factory=RerankerConfig)
     # Dev mode: watch pack source directories for .md changes and trigger live reindex.
     # Requires: pip install watchdog. Not for production use.
     dev_mode_watch: bool = False
@@ -133,6 +162,10 @@ def load_config(config_path: str | Path) -> ServerConfig:
     retrieval_raw = raw.get("retrieval", {})
     retrieval = RetrievalConfig(**retrieval_raw)
 
+    # Parse reranker config
+    reranker_raw = raw.get("reranker", {})
+    reranker = RerankerConfig(**reranker_raw)
+
     return ServerConfig(
         host=server_raw.get("host", "127.0.0.1"),
         port=server_raw.get("port", 8000),
@@ -141,4 +174,5 @@ def load_config(config_path: str | Path) -> ServerConfig:
         packs=packs,
         embedding=embedding,
         retrieval=retrieval,
+        reranker=reranker,
     )
