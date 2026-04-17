@@ -21,7 +21,7 @@ def normalize_vector_scores(results: list[dict], max_distance: float = 2.0) -> l
     return results
 
 
-def normalize_bm25_scores(results: list[dict]) -> list[dict]:
+def normalize_bm25_scores(results: list[dict], bm25_cap: float = 1.0) -> list[dict]:
     """Normalize FTS5 BM25 scores to 0-1 range using an absolute transform.
 
     FTS5 BM25 returns negative scores (more negative = more relevant).
@@ -33,10 +33,19 @@ def normalize_bm25_scores(results: list[dict]) -> list[dict]:
     relative relevance, regardless of what other results are in the set.
     Min-max normalization inflates weak BM25 matches (when all scores are low,
     the worst result still gets 0.0 and the best gets 1.0), distorting fusion.
+
+    BM25 saturation cap (``bm25_cap < 1.0``): clamps the normalized score so
+    that keyword-dense files cannot dominate fusion by an unlimited margin.
+    When a pack has files where the query term appears throughout the body
+    (high term frequency → high absolute BM25), they can score 3x higher in
+    BM25 than related files where the term appears only in the title/lead.
+    The cap limits that gap without eliminating BM25 signal entirely.
+    Default: 1.0 (no cap, backward-compatible).
     """
     for r in results:
         abs_score = abs(r["bm25_score"])
-        r["bm25_norm"] = abs_score / (1.0 + abs_score)
+        raw_norm = abs_score / (1.0 + abs_score)
+        r["bm25_norm"] = min(raw_norm, bm25_cap)
     return results
 
 
@@ -45,8 +54,15 @@ def fuse_scores(
     bm25_results: list[dict],
     vector_weight: float = 0.7,
     text_weight: float = 0.3,
+    bm25_cap: float = 1.0,
 ) -> dict[int, float]:
     """Fuse vector and BM25 scores into a single hybrid score per chunk.
+
+    ``bm25_cap`` limits the normalized BM25 score used in fusion.  When set
+    below 1.0 (e.g. 0.7), files with extremely high term-frequency (keyword-
+    dense) cannot dominate fusion over files that match the query semantically
+    but have the term only in their title or lead.  Only affects the BM25
+    contribution; vector scores are unaffected.
 
     Returns {chunk_id: hybrid_score}.
     """
@@ -57,10 +73,11 @@ def fuse_scores(
         cid = r["chunk_id"]
         scores[cid] = scores.get(cid, 0.0) + vector_weight * r.get("vec_score", 0.0)
 
-    # Accumulate BM25 scores
+    # Accumulate BM25 scores (cap applied during normalization, enforced here too)
     for r in bm25_results:
         cid = r["chunk_id"]
-        scores[cid] = scores.get(cid, 0.0) + text_weight * r.get("bm25_norm", 0.0)
+        bm25_contribution = min(r.get("bm25_norm", 0.0), bm25_cap)
+        scores[cid] = scores.get(cid, 0.0) + text_weight * bm25_contribution
 
     return scores
 

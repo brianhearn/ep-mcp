@@ -79,6 +79,13 @@ class RetrievalConfig(BaseModel):
     length_penalty_threshold: int = 80   # chars; chunks below this are penalized
     length_penalty_factor: float = 0.15  # multiplicative penalty (score *= 1 - factor)
 
+    # BM25 saturation cap — clamps normalized BM25 scores before fusion.
+    # When a file has the query term throughout its body (high TF), its BM25
+    # score can be 3-4x higher than a related file with the term only in the
+    # title/lead.  This cap limits that gap.  Set to 1.0 to disable (default).
+    # Recommended: 0.7 to prevent saturation while preserving BM25 signal.
+    bm25_cap: float = 1.0
+
     # Intent-aware routing — adjust vector/BM25 weights based on query intent
     intent_routing_enabled: bool = True
 

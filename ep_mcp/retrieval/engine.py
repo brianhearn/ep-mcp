@@ -148,7 +148,7 @@ class RetrievalEngine:
 
         # Step 3: Normalize scores
         vec_results = normalize_vector_scores(vec_results)
-        bm25_results = normalize_bm25_scores(bm25_results)
+        bm25_results = normalize_bm25_scores(bm25_results, bm25_cap=self.config.bm25_cap)
 
         # Capture the best vector-only score before fusion.
         # Used as the anchor for adaptive threshold so a BM25 spike
@@ -164,6 +164,7 @@ class RetrievalEngine:
             vec_results, bm25_results,
             vector_weight=vector_weight,
             text_weight=text_weight,
+            bm25_cap=self.config.bm25_cap,
         )
 
         # Debug: log top-20 fused scores before threshold
