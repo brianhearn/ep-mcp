@@ -396,21 +396,62 @@ import re as _re
 # FTS5 special characters that need escaping
 _FTS5_SPECIAL = _re.compile(r'[^\w\s]', _re.UNICODE)
 
+# English stopwords to strip from FTS5 queries.
+# These words break AND-logic by requiring literal matches of non-content terms.
+_STOPWORDS = frozenset({
+    # Question / auxiliary words
+    "what", "which", "how", "why", "when", "where", "who", "whom", "whose",
+    "does", "do", "did", "is", "are", "was", "were", "be", "been", "being",
+    "has", "have", "had", "will", "would", "could", "should", "can", "may",
+    "might", "shall", "must", "need", "dare", "used",
+    # Articles / determiners
+    "a", "an", "the", "this", "that", "these", "those", "my", "your", "its",
+    "our", "their", "his", "her", "some", "any", "all", "both", "each",
+    "every", "few", "more", "most", "other", "such", "no", "not", "only",
+    "same", "so", "than", "too", "very",
+    # Prepositions / conjunctions
+    "in", "on", "at", "by", "for", "with", "about", "against", "between",
+    "into", "through", "during", "before", "after", "above", "below", "from",
+    "up", "down", "out", "off", "over", "under", "again", "then", "once",
+    "of", "to", "as", "if", "or", "and", "but", "nor", "yet", "while",
+    "although", "because", "since", "unless", "until", "whether",
+    # Common filler
+    "i", "me", "we", "us", "you", "he", "she", "they", "them", "it",
+    "get", "use", "make", "tell", "know", "want", "like", "just",
+    "also", "back", "even", "still", "way", "well", "new", "old",
+    "please", "help", "show", "give", "look", "see",
+})
+
 
 def _sanitize_fts5_query(query: str) -> str:
     """Sanitize a natural language query for FTS5 MATCH.
 
-    Strips punctuation and wraps each token in quotes to prevent
-    FTS5 syntax errors from characters like ?, *, (, etc.
+    1. Strips punctuation
+    2. Removes English stopwords (question words, articles, prepositions, etc.)
+       that break AND-logic by requiring literal matches of non-content words
+    3. Filters tokens shorter than 3 characters
+    4. Wraps remaining content tokens in quotes (prevents FTS5 syntax errors)
+    5. Joins with implicit AND -- all content terms must appear in matching chunk
+
+    Falls back to the top-3 longest tokens from the original set if stopword
+    filtering leaves nothing behind.
     """
     # Remove special characters
     clean = _FTS5_SPECIAL.sub(' ', query)
-    # Split into tokens, quote each one
-    tokens = [t.strip() for t in clean.split() if t.strip()]
-    if not tokens:
+    # Tokenize; preserve original casing for FTS matching
+    raw_tokens = [t.strip() for t in clean.split() if t.strip()]
+    # Filter: drop stopwords and very short tokens
+    content_tokens = [
+        t for t in raw_tokens
+        if len(t) >= 3 and t.lower() not in _STOPWORDS
+    ]
+    # Fallback: if everything was filtered, take the 3 longest original tokens
+    if not content_tokens:
+        content_tokens = sorted(raw_tokens, key=len, reverse=True)[:3]
+    if not content_tokens:
         return ''
-    # Join with implicit AND (space-separated quoted tokens)
-    return ' '.join(f'"{t}"' for t in tokens)
+    # Wrap each token in quotes (FTS5 exact-token match) and join as implicit AND
+    return ' '.join('"' + t + '"' for t in content_tokens)
 
 
 def _serialize_f32(vec: list[float]) -> bytes:

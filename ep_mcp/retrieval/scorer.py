@@ -118,8 +118,17 @@ def mmr_rerank(
 ) -> list[tuple[int, float]]:
     """Maximal Marginal Relevance re-ranking.
 
-    Balances relevance vs diversity:
-    MMR(d) = λ × Sim(d, query) - (1-λ) × max(Sim(d, selected))
+    Uses MMR to select and order results for diversity, but preserves the
+    original relevance scores in the output.  This prevents the MMR diversity
+    penalty from collapsing scores when input relevance scores have low
+    variance (common for domain-specific packs where all chunks are
+    semantically similar).
+
+    Selection criterion per step:
+        MMR(d) = λ × Rel(d) - (1-λ) × max(CosSim(d, already_selected))
+
+    The chunk with the highest MMR is picked next, but its *output* score
+    is the original ``Rel(d)`` — not the MMR value.
 
     Args:
         scored_chunks: [(chunk_id, relevance_score), ...] sorted by score desc
@@ -128,7 +137,8 @@ def mmr_rerank(
         k: Number of results to return
 
     Returns:
-        Re-ranked [(chunk_id, mmr_score), ...] of length min(k, len(scored_chunks))
+        Re-ranked [(chunk_id, original_relevance_score), ...] of length
+        min(k, len(scored_chunks)), ordered by MMR selection order.
     """
     if not scored_chunks:
         return []
@@ -139,6 +149,7 @@ def mmr_rerank(
 
     remaining = dict(scored_chunks)
     selected: list[tuple[int, float]] = []
+    selected_embeddings: list[tuple[int, list[float]]] = []  # for diversity calc
 
     while remaining and len(selected) < k:
         best_id = None
@@ -150,11 +161,11 @@ def mmr_rerank(
 
             # Diversity component: max similarity to any already-selected chunk
             div_component = 0.0
-            if selected and cid in embeddings:
-                for sel_id, _ in selected:
-                    if sel_id in embeddings:
-                        sim = _cosine_similarity(embeddings[cid], embeddings[sel_id])
-                        div_component = max(div_component, sim)
+            if selected_embeddings and cid in embeddings:
+                cid_emb = embeddings[cid]
+                for _, sel_emb in selected_embeddings:
+                    sim = _cosine_similarity(cid_emb, sel_emb)
+                    div_component = max(div_component, sim)
 
             mmr = rel_component - (1 - lambda_param) * div_component
 
@@ -163,7 +174,10 @@ def mmr_rerank(
                 best_id = cid
 
         if best_id is not None:
-            selected.append((best_id, best_mmr))
+            # Emit original relevance score, not MMR score
+            selected.append((best_id, remaining[best_id]))
+            if best_id in embeddings:
+                selected_embeddings.append((best_id, embeddings[best_id]))
             del remaining[best_id]
 
     return selected
@@ -214,23 +228,27 @@ def apply_adaptive_threshold(
     activation_floor: float = 0.15,
     score_ratio: float = 0.55,
     absolute_floor: float = 0.10,
+    anchor_score: float | None = None,
 ) -> dict[int, float]:
     """Filter scores using adaptive ratio-based thresholds.
 
     Two-step filter:
     1. Activation floor — if the best score is below this, return empty.
        The query is too far from anything in the pack.
-    2. Score ratio — keep results within `score_ratio` of the best score,
+    2. Score ratio — keep results within `score_ratio` of the *anchor* score,
        with `absolute_floor` as a hard minimum.
 
-    This adapts to pack size, embedding model, and query specificity
-    instead of relying on a fixed absolute cutoff.
+    The anchor score defaults to the best fused score when ``anchor_score``
+    is None.  Pass the best *vector-only* score as ``anchor_score`` in
+    hybrid pipelines so that a BM25 keyword spike does not inflate the
+    cutoff and kill genuine vector-matched results.
 
     Args:
         scores: {chunk_id: fused_score} dict
         activation_floor: Minimum best-score to return any results
-        score_ratio: Keep results within this fraction of best score
+        score_ratio: Keep results within this fraction of anchor score
         absolute_floor: Never filter below this regardless of ratio
+        anchor_score: Explicit anchor for ratio computation (default: best fused score)
 
     Returns:
         Filtered {chunk_id: score} dict (may be empty)
@@ -247,15 +265,18 @@ def apply_adaptive_threshold(
         )
         return {}
 
-    ratio_cutoff = best_score * score_ratio
+    # Use explicit anchor (e.g. vector-only best) when provided,
+    # otherwise fall back to best fused score.
+    anchor = anchor_score if anchor_score is not None else best_score
+    ratio_cutoff = anchor * score_ratio
     effective_min = max(ratio_cutoff, absolute_floor)
 
     filtered = {cid: s for cid, s in scores.items() if s >= effective_min}
 
-    logger.debug(
-        "adaptive_threshold | best=%.4f ratio_cutoff=%.4f effective_min=%.4f "
+    logger.info(
+        "adaptive_threshold | best_fused=%.4f anchor=%.4f ratio_cutoff=%.4f effective_min=%.4f "
         "kept=%d/%d",
-        best_score, ratio_cutoff, effective_min, len(filtered), len(scores),
+        best_score, anchor, ratio_cutoff, effective_min, len(filtered), len(scores),
     )
 
     return filtered

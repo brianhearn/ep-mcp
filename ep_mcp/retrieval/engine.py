@@ -113,9 +113,9 @@ class RetrievalEngine:
         vec_results = self.store.vector_search(query_embedding, limit=candidate_count)
         bm25_results = self.store.bm25_search(request.query, limit=candidate_count)
 
-        logger.debug(
-            "Search '%s': %d vector candidates, %d BM25 candidates",
-            request.query, len(vec_results), len(bm25_results),
+        logger.info(
+            "[PIPELINE] query='%s' | vector=%d BM25=%d candidates (pool=%d)",
+            request.query, len(vec_results), len(bm25_results), candidate_count,
         )
 
         if not vec_results and not bm25_results:
@@ -125,6 +125,15 @@ class RetrievalEngine:
         vec_results = normalize_vector_scores(vec_results)
         bm25_results = normalize_bm25_scores(bm25_results)
 
+        # Capture the best vector-only score before fusion.
+        # Used as the anchor for adaptive threshold so a BM25 spike
+        # doesn't inflate the cutoff and kill vector-matched results.
+        # Best vector-only score, weighted to be on the same scale as fused scores.
+        # This prevents a BM25 spike from inflating the adaptive threshold anchor.
+        vec_best_score = vector_weight * max(
+            (r["vec_score"] for r in vec_results), default=0.0,
+        ) if vec_results else 0.0
+
         # Step 4: Score fusion (with intent-adjusted weights)
         fused = fuse_scores(
             vec_results, bm25_results,
@@ -132,16 +141,29 @@ class RetrievalEngine:
             text_weight=text_weight,
         )
 
+        # Debug: log top-20 fused scores before threshold
+        _log_top_chunks("after_fusion", fused, chunks_store=self.store, top_n=20)
+
         # Step 3b: Score filtering — adaptive threshold or legacy flat cutoff
+        # Anchor on the vector-only best score, not the fused best score,
+        # so BM25 keyword spikes don't raise the threshold above genuine
+        # semantic matches.
+        pre_threshold_count = len(fused)
         if self.config.adaptive_threshold:
             fused = apply_adaptive_threshold(
                 fused,
                 activation_floor=self.config.activation_floor,
                 score_ratio=self.config.score_ratio,
                 absolute_floor=self.config.absolute_floor,
+                anchor_score=vec_best_score,
             )
         else:
             fused = {cid: s for cid, s in fused.items() if s >= self.config.min_score}
+
+        logger.info(
+            "[PIPELINE] threshold_filter | before=%d after=%d dropped=%d",
+            pre_threshold_count, len(fused), pre_threshold_count - len(fused),
+        )
 
         if not fused:
             return []
@@ -168,6 +190,9 @@ class RetrievalEngine:
             short_penalty=self.config.length_penalty_factor,
         )
 
+        # Debug: log top-20 after boosts + penalty
+        _log_top_chunks("after_boosts", fused, chunks_store=self.store, top_n=20)
+
         # Step 5: MMR re-ranking → top candidates (fetch more than max_results to allow dedup)
         scored_list = sorted(fused.items(), key=lambda x: x[1], reverse=True)
         mmr_k = max_results * max(2, self.config.max_chunks_per_file)  # fetch extra for dedup headroom
@@ -180,6 +205,8 @@ class RetrievalEngine:
                 lambda_param=self.config.mmr_lambda,
                 k=mmr_k,
             )
+            # Debug: log top-20 after MMR
+            _log_top_chunks_scored("after_mmr", scored_list[:20], chunks_store=self.store)
         else:
             scored_list = scored_list[:mmr_k]
 
@@ -194,8 +221,8 @@ class RetrievalEngine:
                 if count < self.config.max_chunks_per_file:
                     deduped_scored.append((chunk_id, score))
                     file_counts_pre[fp] = count + 1
-            logger.debug(
-                "file_dedup(pre-build) | before=%d after=%d (max_per_file=%d)",
+            logger.info(
+                "[PIPELINE] file_dedup | before=%d after=%d (max_per_file=%d)",
                 len(scored_list), len(deduped_scored), self.config.max_chunks_per_file,
             )
             scored_list = deduped_scored[:max_results]
@@ -522,6 +549,42 @@ class RetrievalEngine:
                 n = len(blob) // 4
                 embeddings[cid] = list(struct.unpack(f"{n}f", blob))
         return embeddings
+
+
+def _log_top_chunks(
+    stage: str,
+    fused: dict,
+    chunks_store,
+    top_n: int = 20,
+) -> None:
+    """Log top-N chunk scores at a pipeline stage, showing file path."""
+    if not fused:
+        return
+    top = sorted(fused.items(), key=lambda x: x[1], reverse=True)[:top_n]
+    chunk_ids = [cid for cid, _ in top]
+    chunks = chunks_store.get_chunks_by_ids(chunk_ids)
+    logger.info("[STAGE:%s] top-%d chunks:", stage, top_n)
+    for i, (cid, score) in enumerate(top):
+        chunk = chunks.get(cid, {})
+        fp = chunk.get("file_path", "?")
+        logger.info("  %2d. score=%.4f  %s  (chunk_id=%d)", i + 1, score, fp, cid)
+
+
+def _log_top_chunks_scored(
+    stage: str,
+    scored_list: list,
+    chunks_store,
+) -> None:
+    """Log scored list (list of (chunk_id, score) tuples) at a pipeline stage."""
+    if not scored_list:
+        return
+    chunk_ids = [cid for cid, _ in scored_list]
+    chunks = chunks_store.get_chunks_by_ids(chunk_ids)
+    logger.info("[STAGE:%s] top-%d chunks:", stage, len(scored_list))
+    for i, (cid, score) in enumerate(scored_list):
+        chunk = chunks.get(cid, {})
+        fp = chunk.get("file_path", "?")
+        logger.info("  %2d. score=%.4f  %s  (chunk_id=%d)", i + 1, score, fp, cid)
 
 
 def _parse_tags(tags_json: str) -> list[str]:
