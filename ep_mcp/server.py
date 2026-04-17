@@ -35,11 +35,12 @@ logger = logging.getLogger(__name__)
 class PackInstance:
     """A fully initialized pack with all its components."""
 
-    def __init__(self, pack, store, engine, mcp):
+    def __init__(self, pack, store, engine, mcp, index_manager=None):
         self.pack = pack
         self.store = store
         self.engine = engine
         self.mcp = mcp
+        self.index_manager = index_manager  # retained for file watcher reindex
 
 
 def create_embedding_provider(config: ServerConfig) -> EmbeddingProvider:
@@ -238,10 +239,14 @@ async def init_pack(
     engine = RetrievalEngine(pack, store, provider, retrieval_cfg, graph_lookup)
     mcp = create_pack_mcp(slug, pack, engine, graph_lookup)
 
-    return PackInstance(pack=pack, store=store, engine=engine, mcp=mcp)
+    return PackInstance(pack=pack, store=store, engine=engine, mcp=mcp, index_manager=manager)
 
 
-def build_app(config: ServerConfig, pack_instances: dict[str, PackInstance]) -> Starlette:
+def build_app(
+    config: ServerConfig,
+    pack_instances: dict[str, PackInstance],
+    dev_watch: bool = False,
+) -> Starlette:
     """Build the Starlette ASGI application with pack routing.
 
     Each pack's FastMCP app is mounted as a sub-application with its own
@@ -260,14 +265,38 @@ def build_app(config: ServerConfig, pack_instances: dict[str, PackInstance]) -> 
 
     @asynccontextmanager
     async def lifespan(app):
-        """Manage all pack MCP session managers."""
-        # Build nested context managers for each session manager
+        """Manage all pack MCP session managers and optional file watchers."""
         from contextlib import AsyncExitStack
         async with AsyncExitStack() as stack:
             for slug, sm, _ in session_managers:
                 logger.info("Starting session manager for pack '%s'", slug)
                 await stack.enter_async_context(sm.run())
+
+            # Start file watchers in dev mode
+            watchers = []
+            if dev_watch:
+                try:
+                    from .index.watcher import start_watchers
+                    loop = asyncio.get_event_loop()
+                    watchers = start_watchers(
+                        list(pack_instances.values()), loop
+                    )
+                    if watchers:
+                        logger.info(
+                            "Dev file watch enabled for %d pack(s)", len(watchers)
+                        )
+                    else:
+                        logger.warning(
+                            "Dev file watch requested but no watchers started "
+                            "(watchdog installed?)"
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Could not start file watchers: %s", exc)
+
             yield
+
+            for w in watchers:
+                w.stop()
 
     async def health(request: Request) -> JSONResponse:
         packs_info = {}

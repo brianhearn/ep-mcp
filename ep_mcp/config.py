@@ -48,7 +48,7 @@ class RetrievalConfig(BaseModel):
     adaptive_threshold: bool = True
     activation_floor: float = 0.15
     score_ratio: float = 0.55
-    absolute_floor: float = 0.10
+    absolute_floor: float = 0.20
     type_match_boost: float = 0.05
     tag_match_boost: float = 0.03
     always_tier_boost: float = 0.03
@@ -87,6 +87,9 @@ class ServerConfig(BaseModel):
     packs: list[PackConfig] = Field(default_factory=list)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
+    # Dev mode: watch pack source directories for .md changes and trigger live reindex.
+    # Requires: pip install watchdog. Not for production use.
+    dev_mode_watch: bool = False
 
 
 def load_config(config_path: str | Path) -> ServerConfig:
@@ -134,6 +137,7 @@ def load_config(config_path: str | Path) -> ServerConfig:
         host=server_raw.get("host", "127.0.0.1"),
         port=server_raw.get("port", 8000),
         log_level=server_raw.get("log_level", "info"),
+        dev_mode_watch=server_raw.get("dev_mode_watch", False),
         packs=packs,
         embedding=embedding,
         retrieval=retrieval,

@@ -71,7 +71,11 @@ def serve(config_path: str, transport: str) -> None:
             pack_instances[pack_config.slug] = inst
             click.echo(f"  \u2705 {inst.pack.name}: {len(inst.pack.files)} files, "
                        f"{inst.store.chunk_count()} chunks")
-        return build_app(config, pack_instances)
+        return build_app(
+            config,
+            pack_instances,
+            dev_watch=config.dev_mode_watch,
+        )
 
     app = asyncio.run(startup())
     click.echo(f"\nServer ready at http://{config.host}:{config.port}")

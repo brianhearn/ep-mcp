@@ -34,6 +34,7 @@ from .scorer import (
     mmr_rerank,
     normalize_bm25_scores,
     normalize_vector_scores,
+    score_bm25_fallback,
 )
 
 logger = logging.getLogger(__name__)
@@ -109,7 +110,22 @@ class RetrievalEngine:
             )
 
         # Step 2: Dual search
-        query_embedding = await self.provider.embed_query(request.query)
+        # Embedding may fail (provider outage, quota, etc.). Gracefully degrade to
+        # BM25-only mode using lexical scoring rather than crashing the whole request.
+        query_embedding: list[float] | None = None
+        embedding_failed = False
+        try:
+            query_embedding = await self.provider.embed_query(request.query)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[PIPELINE] embedding failed (%s: %s) — degrading to BM25-only mode",
+                type(exc).__name__, exc,
+            )
+            embedding_failed = True
+
+        if embedding_failed:
+            return await self._search_bm25_fallback(request, max_results, candidate_count)
+
         vec_results = self.store.vector_search(query_embedding, limit=candidate_count)
         bm25_results = self.store.bm25_search(request.query, limit=candidate_count)
 
@@ -270,6 +286,102 @@ class RetrievalEngine:
 
         # Return final top-K (file dedup already applied pre-build; bonus slots in cleanly)
         return merged[:max_results]
+
+    async def _search_bm25_fallback(
+        self,
+        request: SearchRequest,
+        max_results: int,
+        candidate_count: int,
+    ) -> list[SearchResult]:
+        """Degraded BM25-only search when the embedding provider is unavailable.
+
+        Uses :func:`score_bm25_fallback` for richer lexical scoring (term coverage,
+        density, path boost, length boost) similar to OpenClaw's fallback mode.
+        Does NOT perform MMR or graph expansion (both need embeddings).
+        Adaptive threshold still applies with BM25-only anchor.
+        """
+        logger.info("[BM25_FALLBACK] running BM25-only search for query='%s'", request.query)
+        bm25_results = self.store.bm25_search(request.query, limit=candidate_count)
+        if not bm25_results:
+            logger.info("[BM25_FALLBACK] no BM25 results")
+            return []
+
+        bm25_results = normalize_bm25_scores(bm25_results)
+
+        # Build chunk map
+        chunk_ids = [r["chunk_id"] for r in bm25_results]
+        chunks = self.store.get_chunks_by_ids(chunk_ids)
+
+        # Score with lexical fallback scorer
+        scores = score_bm25_fallback(bm25_results, chunks, request.query)
+
+        # Adaptive threshold (no vector anchor available — use best fused score)
+        if self.config.adaptive_threshold:
+            scores = apply_adaptive_threshold(
+                scores,
+                activation_floor=self.config.activation_floor,
+                score_ratio=self.config.score_ratio,
+                absolute_floor=self.config.absolute_floor,
+                anchor_score=None,  # no vector anchor in fallback
+            )
+        else:
+            scores = {cid: s for cid, s in scores.items() if s >= self.config.min_score}
+
+        if not scores:
+            return []
+
+        # Metadata boosts + length penalty
+        scores = apply_metadata_boosts(
+            scores, chunks,
+            type_filter=request.type,
+            tag_filter=request.tags,
+            always_files=self._always_files,
+            type_match_boost=self.config.type_match_boost,
+            tag_match_boost=self.config.tag_match_boost,
+            always_tier_boost=self.config.always_tier_boost,
+        )
+        scores = apply_length_penalty(
+            scores, chunks,
+            short_threshold=self.config.length_penalty_threshold,
+            short_penalty=self.config.length_penalty_factor,
+        )
+
+        # Sort, dedup per file, truncate
+        scored_list = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        if self.config.max_chunks_per_file > 0:
+            file_counts: dict[str, int] = {}
+            deduped: list[tuple[int, float]] = []
+            for chunk_id, score in scored_list:
+                chunk = chunks.get(chunk_id)
+                fp = chunk["file_path"] if chunk else ""
+                if file_counts.get(fp, 0) < self.config.max_chunks_per_file:
+                    deduped.append((chunk_id, score))
+                    file_counts[fp] = file_counts.get(fp, 0) + 1
+            scored_list = deduped
+        scored_list = scored_list[:max_results]
+
+        results = []
+        for chunk_id, score in scored_list:
+            chunk = chunks.get(chunk_id)
+            if not chunk:
+                continue
+            tags = _parse_tags(chunk.get("tags", "[]"))
+            results.append(SearchResult(
+                text=chunk["content"],
+                source_file=chunk["file_path"],
+                id=chunk.get("prov_id"),
+                content_hash=chunk.get("content_hash"),
+                verified_at=chunk.get("verified_at"),
+                score=round(score, 4),
+                type=chunk.get("type"),
+                tags=tags,
+                chunk_index=chunk.get("chunk_index", 0),
+                title=chunk.get("title"),
+                graph_expanded=False,
+            ))
+
+        logger.info("[BM25_FALLBACK] returning %d results", len(results))
+        return results
 
     def _apply_graph_expansion(
         self,

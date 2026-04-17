@@ -22,25 +22,21 @@ def normalize_vector_scores(results: list[dict], max_distance: float = 2.0) -> l
 
 
 def normalize_bm25_scores(results: list[dict]) -> list[dict]:
-    """Normalize FTS5 BM25 scores to 0-1 range.
+    """Normalize FTS5 BM25 scores to 0-1 range using an absolute transform.
 
     FTS5 BM25 returns negative scores (more negative = more relevant).
-    Normalize across the result set: best = 1.0, worst = 0.0.
+    Uses the monotonic transform ``rank / (1 + rank)`` on the absolute value,
+    which maps [0, ∞) → [0, 1) without any per-query normalization.
+
+    This is more stable than min-max normalization because BM25 scores are
+    comparable across queries — the same numeric value always means the same
+    relative relevance, regardless of what other results are in the set.
+    Min-max normalization inflates weak BM25 matches (when all scores are low,
+    the worst result still gets 0.0 and the best gets 1.0), distorting fusion.
     """
-    if not results:
-        return results
-
-    scores = [abs(r["bm25_score"]) for r in results]
-    max_score = max(scores)
-    min_score = min(scores)
-    score_range = max_score - min_score
-
     for r in results:
         abs_score = abs(r["bm25_score"])
-        if score_range > 0:
-            r["bm25_norm"] = (abs_score - min_score) / score_range
-        else:
-            r["bm25_norm"] = 1.0  # All same score
+        r["bm25_norm"] = abs_score / (1.0 + abs_score)
     return results
 
 
@@ -280,6 +276,88 @@ def apply_adaptive_threshold(
     )
 
     return filtered
+
+
+def score_bm25_fallback(
+    bm25_results: list[dict],
+    chunks: dict[int, dict],
+    query: str,
+    path_boost: float = 0.18,
+    length_boost_max: float = 0.18,
+    length_boost_target: int = 300,
+) -> dict[int, float]:
+    """Richer lexical scoring for BM25-only fallback mode (no embeddings available).
+
+    Augments the normalized BM25 score with:
+    - **Term coverage:** fraction of query content-tokens present in the chunk.
+      Rewards chunks that answer more of what was asked.
+    - **Token density:** coverage / chunk_token_count. Rewards focused chunks
+      over long documents where the matching terms are buried.
+    - **Path boost:** ``+path_boost`` per query token found in the file path.
+      Helps exact-match files (e.g. query token ``"auto-build"`` matching
+      ``auto-build.md``) surface to the top.
+    - **Length boost:** small linear bonus for longer chunks, capped at
+      ``length_boost_max``. Prevents very short stubs from winning purely
+      on density.
+
+    Inspired by OpenClaw's ``scoreFallbackKeywordResult()``.
+
+    Args:
+        bm25_results: Output of ``normalize_bm25_scores()``.
+        chunks: {chunk_id: chunk_row} from SQLite.
+        query: Original natural language query string.
+        path_boost: Additive boost per query token found in the file path.
+        length_boost_max: Maximum additive length bonus.
+        length_boost_target: Chunk length (chars) at which the length bonus maxes out.
+
+    Returns:
+        {chunk_id: combined_score} dict.
+    """
+    # Tokenize query: lowercase, strip short/stop tokens (mirrors _sanitize_fts5_query logic)
+    import re
+    raw_tokens = re.sub(r'[^\w\s]', ' ', query).lower().split()
+    query_tokens = [
+        t for t in raw_tokens
+        if len(t) >= 3 and t not in _STOPWORDS
+    ] or raw_tokens[:5]  # fallback: keep first 5 tokens
+
+    scores: dict[int, float] = {}
+    for r in bm25_results:
+        cid = r["chunk_id"]
+        bm25_norm = r.get("bm25_norm", 0.0)
+        chunk = chunks.get(cid)
+        if not chunk:
+            scores[cid] = bm25_norm
+            continue
+
+        content_lower = chunk.get("content", "").lower()
+        file_path_lower = chunk.get("file_path", "").lower()
+        content_tokens = content_lower.split()
+        total_tokens = max(len(content_tokens), 1)
+
+        # Term coverage: how many query tokens appear in the chunk content?
+        matched_in_content = sum(1 for t in query_tokens if t in content_lower)
+        coverage = matched_in_content / max(len(query_tokens), 1)
+
+        # Token density: matched tokens relative to chunk size
+        density = coverage / total_tokens * 100  # scale: 0 → ~1 for typical chunks
+        density = min(density, 1.0)
+
+        # Path boost: query tokens in file path
+        matched_in_path = sum(1 for t in query_tokens if t in file_path_lower)
+        p_boost = path_boost * matched_in_path
+
+        # Length boost: small reward for longer (more complete) chunks
+        content_len = len(chunk.get("content", ""))
+        l_boost = length_boost_max * min(content_len / length_boost_target, 1.0)
+
+        scores[cid] = bm25_norm + coverage * 0.4 + density * 0.2 + p_boost + l_boost
+
+    logger.debug(
+        "score_bm25_fallback | scored %d chunks from query '%s' (%d content tokens)",
+        len(scores), query[:60], len(query_tokens),
+    )
+    return scores
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
