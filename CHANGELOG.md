@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`scripts/deploy.sh`** — rsync-based deploy script that copies `ep_mcp/` source directly to both `/opt/ep-mcp/ep_mcp/` and site-packages on the ExpertPack droplet. Replaces the previous tar+pip install pattern which corrupted entrypoint shebangs (shebang was rewritten to EasyBot's local venv path). Supports `--restart-only` flag for service restarts without file copy.
 - **Graph expansion logging** — INFO-level log lines per query: seeds selected (with threshold), total neighbor candidates evaluated, bonus results appended with file paths. DEBUG-level log for each rejected neighbor with cosine score. Provides full per-query visibility for threshold tuning.
 
+### Fixed
+- **BM25 stopword filtering** — `_sanitize_fts5_query()` now strips ~100 English stopwords before building the FTS5 AND query. Previously, natural language queries returned 0 BM25 results because every token (including question words like "What", "does", "how") had to match literally. Tokens shorter than 3 characters are also filtered. Falls back to the 3 longest original tokens if all tokens are stopwords.
+- **MMR score preservation** — `mmr_rerank()` now uses the MMR formula only for selection order but emits the original relevance score. Previously, MMR rewrote scores using the diversity-penalized MMR value, which collapsed scores from ~0.47 to ~0.08 on domain-specific packs where all chunks have high inter-similarity.
+- **Vector-anchored adaptive threshold** — `apply_adaptive_threshold()` accepts an optional `anchor_score` parameter. The engine now passes `vector_weight * best_vec_score` as the anchor, preventing BM25 keyword spikes from inflating the ratio-based cutoff and killing genuine vector-matched results.
+- **Pipeline observability** — added INFO-level logging at every pipeline stage: after fusion, after boosts, after MMR (top-20 chunks with file paths and scores), threshold filter counts, and adaptive threshold parameters.
+
 ### Changed
 - **min_score gating in graph expansion** — now applied to the *final* score (cosine × effective bonus) instead of raw cosine similarity alone. This ensures per-hop decay in deep mode is reflected in the filtering threshold. Shallow mode is equivalent (structural bonus defaults to 1.0).
 - **Graph expansion refactored** — `_apply_graph_expansion()` delegates to `_shallow_graph_expansion()` or `_deep_graph_expansion()` based on config. Shared `_score_neighbor()` helper eliminates duplication.
