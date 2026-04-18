@@ -17,7 +17,7 @@ from .auth import APIKeyAuth
 from .config import ServerConfig
 from .embeddings.base import EmbeddingProvider
 from .embeddings.gemini import GeminiEmbeddingProvider
-from .embeddings.ollama import OllamaEmbeddingProvider
+from .embeddings.cache import QueryEmbeddingCache
 from .index.manager import IndexManager
 from .index.sqlite_store import SQLiteStore
 from .pack.loader import load_pack
@@ -49,10 +49,10 @@ def create_embedding_provider(config: ServerConfig) -> EmbeddingProvider:
     """Create the configured embedding provider."""
     emb = config.embedding
     if emb.provider == "gemini":
-        return GeminiEmbeddingProvider(model=emb.model)
-    if emb.provider == "ollama":
-        base_url = getattr(emb, "base_url", "http://localhost:11434")
-        return OllamaEmbeddingProvider(model=emb.model, base_url=base_url)
+        return GeminiEmbeddingProvider(
+            model=emb.model,
+            output_dimensionality=emb.output_dimensionality,
+        )
     raise ValueError(f"Unsupported embedding provider: {emb.provider}")
 
 

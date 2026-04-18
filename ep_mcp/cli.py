@@ -56,9 +56,14 @@ def serve(config_path: str, transport: str) -> None:
     import asyncio
     import uvicorn
     from .server import build_app, create_embedding_provider, init_pack
+    from .embeddings.cache import QueryEmbeddingCache
+    from pathlib import Path
 
     async def startup():
         provider = create_embedding_provider(config)
+        # Wrap with query embedding cache — warm latency ~1ms vs ~4s live
+        _cache_dir = Path(config.packs[0].path) / ".ep-mcp"
+        provider = QueryEmbeddingCache(provider, cache_path=_cache_dir / "query_embed_cache.db")
         pack_instances = {}
         for pack_config in config.packs:
             click.echo(f"Loading pack: {pack_config.slug} from {pack_config.path}")

@@ -27,6 +27,7 @@ class EmbeddingConfig(BaseModel):
 
     provider: str = "gemini"
     model: str = "gemini-embedding-001"
+    output_dimensionality: int | None = None  # MRL: None=3072d full, 768=4x smaller (0.26% loss)
     # Azure-specific
     azure_endpoint: str | None = None
     azure_api_version: str = "2024-10-21"

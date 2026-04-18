@@ -25,10 +25,10 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
     API key from GEMINI_API_KEY environment variable.
 
     Batching strategy:
-    - Splits input into chunks of ``_MAX_BATCH_SIZE`` (100) texts.
-    - Sends up to ``_MAX_PARALLEL_BATCHES`` (4) concurrent requests during
+    - Splits input into chunks of _MAX_BATCH_SIZE (100) texts.
+    - Sends up to _MAX_PARALLEL_BATCHES (4) concurrent requests during
       bulk index builds, using an asyncio.Semaphore to cap parallelism.
-    - Single-text queries (``embed_query``) bypass batch splitting for lower
+    - Single-text queries (embed_query) bypass batch splitting for lower
       latency.
     - Each batch retries up to 3 times with exponential backoff.
     """
@@ -38,6 +38,7 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
         model: str = "gemini-embedding-001",
         api_key: str | None = None,
         max_parallel_batches: int = _MAX_PARALLEL_BATCHES,
+        output_dimensionality: int | None = None,
     ):
         self._model = model
         self._api_key = api_key or os.environ.get("GEMINI_API_KEY")
@@ -47,6 +48,7 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
             )
         self._client = genai.Client(api_key=self._api_key)
         self._semaphore = asyncio.Semaphore(max_parallel_batches)
+        self._output_dimensionality = output_dimensionality  # None = full 3072d
 
     @property
     def model_name(self) -> str:
@@ -54,27 +56,19 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
 
     @property
     def dimension(self) -> int:
-        return _GEMINI_DIMENSION
+        return self._output_dimensionality or _GEMINI_DIMENSION
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        """Generate embeddings via Gemini API with parallel batch requests.
-
-        Splits ``texts`` into batches of ``_MAX_BATCH_SIZE`` and fires up to
-        ``_MAX_PARALLEL_BATCHES`` concurrent requests, preserving input order.
-        For index builds with hundreds of chunks this is significantly faster
-        than sequential batching.
-        """
+        """Generate embeddings via Gemini API with parallel batch requests."""
         if not texts:
             return []
 
-        # Build batch slices
         batches = [
             texts[i : i + _MAX_BATCH_SIZE]
             for i in range(0, len(texts), _MAX_BATCH_SIZE)
         ]
 
         if len(batches) == 1:
-            # Fast path for single batch — no parallelism overhead
             return await self._embed_batch_with_semaphore(batches[0])
 
         logger.info(
@@ -82,14 +76,12 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
             len(texts), len(batches), self._semaphore._value,
         )
 
-        # Fire all batches concurrently (bounded by semaphore)
         tasks = [
             asyncio.ensure_future(self._embed_batch_with_semaphore(batch))
             for batch in batches
         ]
         batch_results = await asyncio.gather(*tasks)
 
-        # Flatten results, preserving order
         all_embeddings: list[list[float]] = []
         for batch_emb in batch_results:
             all_embeddings.extend(batch_emb)
@@ -98,7 +90,6 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
     async def _embed_batch_with_semaphore(
         self, texts: list[str]
     ) -> list[list[float]]:
-        """Acquire semaphore slot then embed a batch."""
         async with self._semaphore:
             return await self._embed_batch(texts)
 
@@ -108,13 +99,12 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
         """Embed a single batch with exponential-backoff retry."""
         for attempt in range(max_retries):
             try:
-                # google-genai embed_content is sync — run in thread executor
+                kwargs: dict = dict(model=self._model, contents=texts)
+                if self._output_dimensionality is not None:
+                    kwargs["config"] = {"output_dimensionality": self._output_dimensionality}
                 result = await asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: self._client.models.embed_content(
-                        model=self._model,
-                        contents=texts,
-                    ),
+                    lambda: self._client.models.embed_content(**kwargs),
                 )
                 return [e.values for e in result.embeddings]
 
