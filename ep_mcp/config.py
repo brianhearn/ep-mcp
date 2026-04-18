@@ -87,6 +87,21 @@ class RetrievalConfig(BaseModel):
     # Recommended: 0.7 to prevent saturation while preserving BM25 signal.
     bm25_cap: float = 1.0
 
+    # BM25 K-of-N token matching — require only a fraction of query tokens
+    # to match, not all of them (which is strict AND).  Addresses the case
+    # where a legitimately relevant file is missing one query token (e.g. a
+    # focused scenarios file that doesn't happen to mention the product name).
+    # With ratio=0.67 and 3 tokens, at least 2 must match; with 4 tokens, 3.
+    # Set to 1.0 for strict AND (all tokens required) or 0.0 for pure OR.
+    # Formula: required_k = max(1, int(N * ratio)), clamped to n-1 when ratio<1.
+    # Implementation: generates OR-of-AND-combinations, e.g. for 2-of-3:
+    #   (t1 AND t2) OR (t1 AND t3) OR (t2 AND t3)
+    # Capped at 6 tokens to avoid combinatorial blowup (C(6,4)=15 clauses).
+    # DEFAULT 1.0 (strict AND, backward-compatible).  Widening to 0.67 helps
+    # recall but scrambles the downstream reranker + MMR until those stages
+    # are tuned to handle the larger candidate pool.  Off by default.
+    bm25_min_token_match_ratio: float = 1.0
+
     # Intent-aware routing — adjust vector/BM25 weights based on query intent
     intent_routing_enabled: bool = True
 

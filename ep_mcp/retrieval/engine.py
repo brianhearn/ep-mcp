@@ -136,7 +136,11 @@ class RetrievalEngine:
             return await self._search_bm25_fallback(request, max_results, candidate_count)
 
         vec_results = self.store.vector_search(query_embedding, limit=candidate_count)
-        bm25_results = self.store.bm25_search(request.query, limit=candidate_count)
+        bm25_results = self.store.bm25_search(
+            request.query,
+            limit=candidate_count,
+            min_token_match_ratio=self.config.bm25_min_token_match_ratio,
+        )
 
         logger.info(
             "[PIPELINE] query='%s' | vector=%d BM25=%d candidates (pool=%d)",
@@ -348,7 +352,11 @@ class RetrievalEngine:
         Adaptive threshold still applies with BM25-only anchor.
         """
         logger.info("[BM25_FALLBACK] running BM25-only search for query='%s'", request.query)
-        bm25_results = self.store.bm25_search(request.query, limit=candidate_count)
+        bm25_results = self.store.bm25_search(
+            request.query,
+            limit=candidate_count,
+            min_token_match_ratio=self.config.bm25_min_token_match_ratio,
+        )
         if not bm25_results:
             logger.info("[BM25_FALLBACK] no BM25 results")
             return []

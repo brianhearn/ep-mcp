@@ -260,14 +260,28 @@ class SQLiteStore:
         ).fetchall()
         return [{"chunk_id": r["chunk_id"], "distance": r["distance"]} for r in rows]
 
-    def bm25_search(self, query: str, limit: int = 40) -> list[dict]:
+    def bm25_search(
+        self,
+        query: str,
+        limit: int = 40,
+        min_token_match_ratio: float = 1.0,
+    ) -> list[dict]:
         """Find chunks by BM25 text search.
+
+        Args:
+            query: Natural language query string.
+            limit: Maximum number of results to return.
+            min_token_match_ratio: Fraction of content tokens required to match.
+                1.0 = strict AND (all tokens must appear, default for backward
+                compatibility).  0.67 = at least 2/3 of tokens must appear
+                (e.g. 2-of-3, 3-of-4).  Values < 1.0 generate K-of-N queries
+                via OR-of-AND combinations.
 
         Returns list of dicts with chunk_id, bm25_score.
         More negative = more relevant (FTS5 convention).
         """
         # Sanitize query for FTS5: quote each token to prevent syntax errors
-        safe_query = _sanitize_fts5_query(query)
+        safe_query = _sanitize_fts5_query(query, min_token_match_ratio=min_token_match_ratio)
         if not safe_query:
             return []
         rows = self.conn.execute(
@@ -423,7 +437,15 @@ _STOPWORDS = frozenset({
 })
 
 
-def _sanitize_fts5_query(query: str) -> str:
+# Cap total tokens considered for K-of-N combinatorics.  C(6,4)=15 clauses is
+# already generous; beyond this the query string grows quadratically.
+_MAX_BM25_TOKENS = 6
+
+
+def _sanitize_fts5_query(
+    query: str,
+    min_token_match_ratio: float = 1.0,
+) -> str:
     """Sanitize a natural language query for FTS5 MATCH.
 
     1. Strips punctuation
@@ -431,11 +453,29 @@ def _sanitize_fts5_query(query: str) -> str:
        that break AND-logic by requiring literal matches of non-content words
     3. Filters tokens shorter than 3 characters
     4. Wraps remaining content tokens in quotes (prevents FTS5 syntax errors)
-    5. Joins with implicit AND -- all content terms must appear in matching chunk
+    5. Builds the MATCH expression based on ``min_token_match_ratio``:
+       - ratio >= 1.0: strict AND (all tokens required)
+       - ratio <= 0.0: pure OR (any token matches)
+       - otherwise:    K-of-N matching, where K = max(1, ceil(N * ratio)).
+         Emitted as OR-of-AND combinations, e.g. 2-of-3:
+           (t1 AND t2) OR (t1 AND t3) OR (t2 AND t3)
+         BM25 naturally ranks chunks matching all N tokens above chunks
+         matching only K, so precision is preserved in scoring while recall
+         is preserved in candidate selection.
+
+    K-of-N fixes the class of miss where a legitimately relevant file is
+    missing one specific query token (e.g. a focused scenarios file that
+    doesn't repeat the product name inline).  Strict AND excluded those
+    files entirely from BM25; pure OR floods the pool with single-token
+    matches.  K-of-N gives graduated recall without the noise.
 
     Falls back to the top-3 longest tokens from the original set if stopword
-    filtering leaves nothing behind.
+    filtering leaves nothing behind.  Caps total tokens at ``_MAX_BM25_TOKENS``
+    to avoid combinatorial blowup in the query string.
     """
+    import math
+    from itertools import combinations
+
     # Remove special characters
     clean = _FTS5_SPECIAL.sub(' ', query)
     # Tokenize; preserve original casing for FTS matching
@@ -450,8 +490,40 @@ def _sanitize_fts5_query(query: str) -> str:
         content_tokens = sorted(raw_tokens, key=len, reverse=True)[:3]
     if not content_tokens:
         return ''
-    # Wrap each token in quotes (FTS5 exact-token match) and join as implicit AND
-    return ' '.join('"' + t + '"' for t in content_tokens)
+
+    # Cap token count for combinatorial safety.  Prefer longer tokens as they
+    # are more likely to be content-bearing.
+    if len(content_tokens) > _MAX_BM25_TOKENS:
+        content_tokens = sorted(content_tokens, key=len, reverse=True)[:_MAX_BM25_TOKENS]
+
+    n = len(content_tokens)
+    quoted = ['"' + t + '"' for t in content_tokens]
+
+    # Strict AND (backward-compatible default)
+    if min_token_match_ratio >= 1.0 or n <= 1:
+        return ' AND '.join(quoted)
+
+    # Pure OR when ratio is 0 or below
+    if min_token_match_ratio <= 0.0:
+        return ' OR '.join(quoted)
+
+    # K-of-N: require at least K tokens to match.
+    # Use floor so ratio=0.67 maps to 2-of-3 (not 3-of-3); this is the
+    # "allow a minority of tokens to be missing" interpretation that gives
+    # graduated recall.  Clamp to [1, n-1] so N>=2 always allows at least
+    # one missing token when the ratio is < 1.0.
+    k = max(1, int(n * min_token_match_ratio))
+    k = min(k, n - 1)  # never equal to n when ratio < 1.0
+
+    if k <= 1:
+        return ' OR '.join(quoted)
+
+    # Build OR of AND-combinations: choose(n, k) clauses
+    clauses = [
+        '(' + ' AND '.join(combo) + ')'
+        for combo in combinations(quoted, k)
+    ]
+    return ' OR '.join(clauses)
 
 
 def _serialize_f32(vec: list[float]) -> bytes:

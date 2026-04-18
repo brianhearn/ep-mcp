@@ -488,6 +488,15 @@ class RetrievalConfig:
     length_penalty_threshold: int = 80
     length_penalty_factor: float = 0.15
 
+    # BM25 saturation cap (0 < cap <= 1.0). Clamps normalized BM25 before fusion
+    # to prevent keyword-dense files from dominating fusion by an unlimited margin.
+    bm25_cap: float = 1.0
+
+    # BM25 K-of-N token matching ratio.  1.0 = strict AND (default), 0.0 = pure OR.
+    # Intermediate values emit OR-of-AND combinations over content tokens.  See
+    # §5.7 for details and current deployment caveat.
+    bm25_min_token_match_ratio: float = 1.0
+
     # Intent-aware routing
     intent_routing_enabled: bool = True
 
@@ -575,6 +584,31 @@ Replaces the brittle flat `min_score` cutoff with a ratio-based filter that adap
 This adapts naturally: a highly specific query with a 0.8 best score keeps results above 0.44. A broad query with a 0.3 best score keeps results above 0.165 (but not below 0.10).
 
 Legacy `min_score` is still respected when `adaptive_threshold: false`.
+
+### 5.7 BM25 Query Sanitizer and K-of-N Token Matching
+
+The FTS5 MATCH expression passed to `chunks_fts` is built by `_sanitize_fts5_query(query, min_token_match_ratio)` in `ep_mcp/index/sqlite_store.py`.
+
+**Pre-processing (always applied):**
+1. Strip non-alphanumeric characters to whitespace.
+2. Tokenize on whitespace, preserving original casing (FTS5's `porter unicode61` tokenizer lowercases and stems at match time).
+3. Drop English stopwords (question words, articles, prepositions, auxiliary verbs) from a curated `_STOPWORDS` frozenset. Natural-language stopwords such as `what`, `how`, `does`, `the`, `of` would otherwise force literal matches of non-content words and eliminate virtually all candidates under AND logic.
+4. Drop tokens shorter than 3 characters.
+5. Fallback: if every token was filtered, keep the 3 longest original tokens so the query still returns something.
+6. Cap total tokens at `_MAX_BM25_TOKENS = 6` (prefer longer tokens) to bound combinatorial blowup in K-of-N mode.
+
+**Query expression shape, controlled by `min_token_match_ratio`:**
+- `ratio >= 1.0` (strict AND, default) -- emits `"t1" AND "t2" AND ... AND "tn"`. Every content token must appear in a matching chunk.
+- `ratio <= 0.0` (pure OR) -- emits `"t1" OR "t2" OR ... OR "tn"`. Any one token match pulls a chunk into the candidate pool. Regressed eval in testing (too much single-token noise).
+- `0 < ratio < 1.0` (K-of-N) -- computes `k = max(1, int(n * ratio))`, clamped to `n-1` so at least one missing token is always allowed when the ratio is under 1.0. Emits `OR` of all `C(n, k)` `AND`-combinations, e.g. for 3 tokens at ratio 0.67:
+  ```
+  ("t1" AND "t2") OR ("t1" AND "t3") OR ("t2" AND "t3")
+  ```
+  BM25 naturally ranks chunks matching all `n` tokens above chunks matching only `k`, so precision is preserved in scoring while recall is preserved in candidate selection.
+
+**Motivating class of miss:** pack files frequently omit the product name or a surrounding contextual token (they live inside the pack's context; there is no reason to repeat it on every line). A file that legitimately answers a question but happens not to mention one query token would be excluded entirely by strict AND. K-of-N admits those files into the candidate pool without the noise of pure OR.
+
+**Current deployment caveat (2026-04-18):** `bm25_min_token_match_ratio` defaults to `1.0` (strict AND) because enabling K-of-N at 0.67 regressed end-to-end eval on the ezt-designer pack (83.7% -> 79.1%), even though it improved BM25 recall as designed. Investigation: the enlarged candidate pool shifted the post-fusion score distribution such that MMR, during diversity-driven selection, dropped legitimate sibling concept files out of the top-20 because of their high cosine similarity to the first-selected sibling. MMR's diversity penalty is structurally hostile to domain packs with tightly clustered sibling files. Until MMR is reformed (see §5.1 pipeline notes and the Known Limitations in `CHANGELOG.md`), the K-of-N machinery stays code-complete but dormant. Flipping `bm25_min_token_match_ratio` to `0.67` in `config.yaml` is a single-knob activation once MMR can handle the wider pool.
 
 
 ## 6. Embedding Provider Interface
