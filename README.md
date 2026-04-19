@@ -6,16 +6,21 @@ An MCP server that turns any ExpertPack into a live, queryable knowledge service
 
 **[🌐 expertpack.ai](https://expertpack.ai)** · **[📦 ExpertPack Framework](https://github.com/brianhearn/ExpertPack)** · **[📖 Architecture](ARCHITECTURE.md)**
 
->95.5% retrieval hit rate on a 22-question benchmark against a real production pack (826 chunks).
+87.8% retrieval hit rate / 0 full misses on a 22-question benchmark against a production v4.1 atomic-conceptual pack (658 chunks). Prior v4.0 baseline on the same pack and eval set: 65.1%.
 
 ## Features
 
 - **Schema-aware hybrid retrieval**: BM25 + vector search (sqlite-vec), metadata boosting, MMR re-ranking, adaptive threshold filtering, length penalty
+- **`requires:` expansion (schema v4.1 atomic-conceptual)**: When a top-K atom's frontmatter declares `requires: [B, C]`, the referenced atoms are auto-appended to results as additional `SearchResult`s flagged `requires_expanded=True`. Directional (A→B does not imply B→A), transitive up to 2 hops, capped at 3 atoms and 3,500 cumulative tokens, appended after the `max_results` slice so it never displaces top-K.
 - **Intent-aware routing**: Automatic query classification (ENTITY/HOW/WHY/WHEN/GENERAL) adjusts vector/BM25 fusion weights per query — no LLM required
+- **Query embedding cache**: SQLite-backed cache keyed by `(model, dimension, sha256(query))` — warm query latency drops from ~4s (live Gemini API) to ~1ms
 - **Deep graph traversal**: Optional multi-hop BFS expansion over knowledge graph edges with per-hop score decay and drift prevention
+- **Reserved-slot graph merge**: Configurable protected slots in the final top-K reserved for graph-expanded neighbors so related files surface even against dominant core results
+- **BM25 fallback mode**: Embedding provider outage degrades gracefully to lexical-only search (coverage + density + path + length scoring) instead of a hard error
+- **Cross-encoder reranker**: Optional second-pass precision reranker (disabled by default, ~70ms warm latency when enabled)
 - **Provenance-first**: Every result includes `id`, `content_hash`, `verified_at`, `source_file`
 - **EP-native chunking**: Files are treated as atomic retrieval units (split at `##` only for oversized content)
-- **Frontmatter aware**: Strips metadata for embedding, extracts `type`, `tags`, etc. for boosting/filtering
+- **Frontmatter aware**: Strips metadata for embedding, extracts `type`, `tags`, `requires`, etc. for boosting/expansion/filtering
 - **Incremental indexing**: Content-hash based staleness detection — only re-embeds changed files
 - **Multi-pack support**: Path-based routing at `/packs/{slug}/mcp`
 - **Graph-aware retrieval**: optional post-retrieval expansion via `_graph.yaml` adjacency
@@ -82,16 +87,23 @@ retrieval:
   graph_expansion_confidence_threshold: 0.38
   graph_expansion_structural_bonus: 1.0
 
-  # New in latest:
+  # Adaptive + length + intent:
   adaptive_threshold: true
   activation_floor: 0.15
   score_ratio: 0.55
-  absolute_floor: 0.10
+  absolute_floor: 0.20
   length_penalty_threshold: 80
   length_penalty_factor: 0.15
   intent_routing_enabled: true
   graph_expansion_deep: false
   graph_expansion_deep_max_bonus: 5
+
+  # Schema v4.1 `requires:` expansion (enabled by default):
+  requires_expansion_enabled: true
+  requires_expansion_max_depth: 2
+  requires_expansion_max_atoms: 3
+  requires_expansion_token_budget: 3500
+  requires_expansion_score: 0.30
 ```
 
 **Note:** All `retrieval:` fields are optional — defaults shown above. See [ARCHITECTURE.md §5](ARCHITECTURE.md) for the full 8-step pipeline.

@@ -1,7 +1,7 @@
 # ExpertPack MCP — Architecture
 
-**Version:** 0.3
-**Date:** 2026-04-16
+**Version:** 0.4
+**Date:** 2026-04-19
 **Authors:** Brian Hearn, EasyBot
 **Prerequisite:** [VISION.md](VISION.md) v0.4
 
@@ -609,6 +609,51 @@ The FTS5 MATCH expression passed to `chunks_fts` is built by `_sanitize_fts5_que
 **Motivating class of miss:** pack files frequently omit the product name or a surrounding contextual token (they live inside the pack's context; there is no reason to repeat it on every line). A file that legitimately answers a question but happens not to mention one query token would be excluded entirely by strict AND. K-of-N admits those files into the candidate pool without the noise of pure OR.
 
 **Current deployment caveat (2026-04-18):** `bm25_min_token_match_ratio` defaults to `1.0` (strict AND) because enabling K-of-N at 0.67 regressed end-to-end eval on the ezt-designer pack (83.7% -> 79.1%), even though it improved BM25 recall as designed. Investigation: the enlarged candidate pool shifted the post-fusion score distribution such that MMR, during diversity-driven selection, dropped legitimate sibling concept files out of the top-20 because of their high cosine similarity to the first-selected sibling. MMR's diversity penalty is structurally hostile to domain packs with tightly clustered sibling files. Until MMR is reformed (see §5.1 pipeline notes and the Known Limitations in `CHANGELOG.md`), the K-of-N machinery stays code-complete but dormant. Flipping `bm25_min_token_match_ratio` to `0.67` in `config.yaml` is a single-knob activation once MMR can handle the wider pool.
+
+### 5.8 `requires:` Expansion (Schema v4.1 Atomic-Conceptual)
+
+The `requires:` frontmatter field on v4.1 atomic-conceptual atoms declares directional content dependencies between atoms in the same pack. When the parent repository's schema was refined from v4.0 composite parent-child files to strict single-atom files in v4.1, `requires:` replaced file-level hierarchy as the mechanism for overview/detail relationships. EP MCP honors the declaration at retrieval time: if atom `A` with `requires: [B, C]` lands in the top-K, atoms `B` and `C` are looked up, scored at a fixed transitive score, and appended to the result set after the `max_results` slice.
+
+**Parser wiring:** `PackFile.requires: list[str]` is populated by `loader.py` directly from the frontmatter list. No other schema fields drive the expansion — this is purely a declared-dependency mechanism, not inferred from links or tags.
+
+**Entry point:** `_apply_requires_expansion(final_top_k)` in `retrieval/engine.py`, invoked only after MMR and the `max_results` slice have finalized the core top-K. Controlled by `retrieval.requires_expansion_enabled` (default: `true`).
+
+**Caps (all in `RetrievalConfig`):**
+
+| Field | Default | Purpose |
+|---|---|---|
+| `requires_expansion_enabled` | `true` | Master switch. |
+| `requires_expansion_max_depth` | `2` | Transitive hop cap. A `requires` B `requires` C expands both B and C; a third hop is not followed. |
+| `requires_expansion_max_atoms` | `3` | Upper bound on appended atoms per query regardless of depth. |
+| `requires_expansion_token_budget` | `3500` | Cumulative token budget. Atoms beyond the budget are skipped (first-fit ordering). |
+| `requires_expansion_score` | `0.30` | Displayed score for every appended atom. Intentionally below the typical vector cosine range (~0.6–0.8) so agents can visually distinguish transitively-included atoms from primary matches. |
+
+**Semantics:**
+- **Directional.** `A: requires: [B]` pulls B when A hits the top-K. Retrieving B alone does NOT pull A. Asymmetric by design: overviews should auto-pull detail atoms; detail atoms should not back-reference overviews into every detail-only query.
+- **Transitive with cap.** Each newly-expanded atom's own `requires:` field is walked, up to `requires_expansion_max_depth` hops total from the original top-K seed.
+- **Dedup-safe.** If an atom is already in the top-K or has already been appended by expansion, it is skipped — but its own `requires:` entries still propagate from the copy that is present.
+- **Additive only.** Expansion fires AFTER the `max_results` slice. It never displaces top-K results. An agent asking for `n=10` may receive `10 + k` results where `0 <= k <= requires_expansion_max_atoms`.
+- **Score stability.** All appended atoms receive `requires_expansion_score` rather than a cosine similarity. This avoids polluting the ordering semantics of the primary top-K: a 0.300 entry is unambiguously transitive; a 0.6+ entry is unambiguously an organic hit.
+- **`SearchResult.requires_expanded: bool`** — new field on the result model, `False` for primary results, `True` for appended atoms. Exposed in the `GET /search` HTTP response and the `ep_search` MCP tool output so clients can render transitively-included content differently.
+
+**Resolver.** `requires:` entries are strings. To keep authoring low-ceremony, the resolver accepts four forms (tried in order):
+1. Full provenance id (e.g. `ezt-designer/concepts/routing-directions`).
+2. Exact pack-relative path (e.g. `concepts/routing-directions.md`).
+3. Bare basename in the origin atom's directory (e.g. `routing-directions.md` declared from another `concepts/*.md` file).
+4. Unique basename anywhere in the pack (case-insensitive; if the basename is ambiguous, no match is used).
+
+Unresolvable entries are logged as warnings (`requires_expansion | unresolved requires entry '<value>' in '<origin>'`) and skipped. Authoring mistakes surface during indexing review rather than silently dropping retrieval coverage.
+
+**Chunk selection for appended atoms.** Each expansion target file is reduced to its primary chunk (`chunk_index=0`), matching the convention used by graph expansion. If no primary chunk is indexed for a resolved file, the expansion for that entry is skipped with a debug log line.
+
+**Interaction with other mechanisms:**
+- **Organic retrieval.** If the detail atom would already rank top-K organically, expansion is a no-op via dedup. Expansion only fires when the overview hits but the detail does not — which is exactly the targeted case.
+- **Graph expansion.** Independent and composable. Graph expansion works off `_graph.yaml` adjacency and a separate structural bonus. `requires:` works off frontmatter and a fixed score. Both run post-MMR and are additive-only; neither displaces the other's contributions.
+- **Reranker.** The reranker scores the top `candidate_pool_size` candidates before the top-K slice. `requires:` expansion runs strictly after the final top-K is chosen, so it is not subject to reranker reordering.
+
+**Observability.** The engine logs a single INFO line per query when expansion runs: `requires_expansion | appended=<n> atoms tokens=<used>/<budget> files=[...]`. Token budget and atom-cap misses emit separate DEBUG-level lines for threshold tuning.
+
+**Production verification.** On the ezt-designer pack live at expertpack.ai/mcp, requires-expansion has been observed firing correctly for overview→detail relationships on live queries (e.g. `routing-directions` overview at rank 1 pulling `routing-editing` detail as a [REQUIRES] entry at rank 9). The mechanism moved the pack's retrieval benchmark from 82.9% source hit rate with 1 MISS to 87.8% with 0 MISSes across 22 eval questions; full results in the pack's `eval/results/v41-retrieval-*.md`.
 
 
 ## 6. Embedding Provider Interface
