@@ -154,6 +154,7 @@ def _inventory_files(pack_path: Path, manifest) -> dict[str, PackFile]:
             tags=_ensure_list(frontmatter.get("tags", [])),
             provenance=provenance,
             retrieval_strategy=retrieval_strategy,
+            requires=_ensure_list(frontmatter.get("requires", [])),
             content=content,
             raw_content=raw_content,
             size_tokens=size_tokens,

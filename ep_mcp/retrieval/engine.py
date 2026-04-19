@@ -1,4 +1,4 @@
-"""Hybrid retrieval engine: vector + BM25 → fusion → boosting → [graph widen] → MMR → graph expansion → reserved-slot merge.
+"""Hybrid retrieval engine: vector + BM25 → fusion → boosting → [graph widen] → MMR → graph expansion → reserved-slot merge → requires expansion.
 
 Pipeline:
 1. Intent classification → adaptive weight selection
@@ -15,7 +15,10 @@ Pipeline:
    best graph-expanded bonuses when they'd otherwise lose the merge-sort. Falls
    back to legacy merge-sort if reserved_slots=0.
 10. Cross-encoder reranker (if configured)
-11. Return final top-K
+11. Slice to max_results (final top-K)
+12. `requires:` expansion (schema v4.1+) — append atomic-conceptual dependencies
+    for any retrieved atoms that declare `requires:` in their frontmatter.
+    Additive; does NOT displace top-K and does NOT re-slice to max_results.
 """
 
 import json
@@ -335,8 +338,19 @@ class RetrievalEngine:
         if self._reranker is not None:
             merged = self._reranker.rerank(request.query, merged)
 
-        # Return final top-K (file dedup already applied pre-build; bonus slots in cleanly)
-        return merged[:max_results]
+        # Slice to max_results BEFORE requires-expansion so required atoms
+        # attach to the files that actually survive the top-K cutoff.
+        final_top_k = merged[:max_results]
+
+        # Step 9: `requires:` expansion — atomic-conceptual dependency pull-through.
+        # Appends required atoms for each surviving top-K result. Additive to the
+        # final list; does NOT displace top-K and does NOT re-slice to max_results.
+        if self.config.requires_expansion_enabled:
+            requires_bonus = self._apply_requires_expansion(final_top_k)
+            if requires_bonus:
+                final_top_k = final_top_k + requires_bonus
+
+        return final_top_k
 
     async def _search_bm25_fallback(
         self,
@@ -700,6 +714,233 @@ class RetrievalEngine:
             title=primary_chunk.get("title"),
             graph_expanded=True,
         )
+
+    def _apply_requires_expansion(
+        self,
+        results: list[SearchResult],
+    ) -> list[SearchResult]:
+        """Atomic-conceptual `requires:` expansion (schema v4.1+).
+
+        For each top-K result whose source file declares `requires:` in frontmatter,
+        transitively collect required atoms and return them as bonus results flagged
+        `requires_expanded=True`. Directional — only follows forward edges from the
+        retrieved atom's perspective.
+
+        Caps per query:
+          - Depth: self.config.requires_expansion_max_depth transitive hops
+          - Count: self.config.requires_expansion_max_atoms atoms appended
+          - Tokens: self.config.requires_expansion_token_budget cumulative
+
+        Already-in-result files are skipped (by source_file). Each appended atom
+        is the WHOLE-FILE primary chunk (chunk_index=0), not a partial chunk.
+
+        Returns [] when disabled, when no results declare `requires`, or when no
+        required atoms resolve to files in the pack.
+
+        Resolution order for a requires entry:
+          1. Exact match against PackFile.provenance.id (full pack-prefixed id)
+          2. Exact match against PackFile.path (pack-relative path)
+          3. Match by basename (same-dir convention from schema examples)
+        """
+        if not results:
+            return []
+
+        # Lazy-build reverse indices (id → path, basename → [paths]).
+        if not hasattr(self, "_requires_id_index"):
+            self._build_requires_indices()
+
+        max_depth = max(0, self.config.requires_expansion_max_depth)
+        max_atoms = max(0, self.config.requires_expansion_max_atoms)
+        token_budget = max(0, self.config.requires_expansion_token_budget)
+        expansion_score = self.config.requires_expansion_score
+
+        if max_depth == 0 or max_atoms == 0:
+            return []
+
+        seen_files: set[str] = {r.source_file for r in results}
+        bonus: list[SearchResult] = []
+        tokens_used = 0
+
+        # BFS frontier: (file_path, depth). Seed with top-K source files at depth 0;
+        # we expand their requires at depth 1.
+        frontier: list[tuple[str, int]] = [(r.source_file, 0) for r in results]
+        visited: set[str] = set(seen_files)
+
+        while frontier and len(bonus) < max_atoms:
+            next_frontier: list[tuple[str, int]] = []
+            for fp, depth in frontier:
+                if depth >= max_depth:
+                    continue
+                required_paths = self._resolve_requires_for_path(fp)
+                for req_fp in required_paths:
+                    if req_fp in visited:
+                        continue
+                    visited.add(req_fp)
+                    if req_fp in seen_files:
+                        # Already present as a core/graph result — don't duplicate,
+                        # but DO let its own requires propagate.
+                        next_frontier.append((req_fp, depth + 1))
+                        continue
+
+                    built = self._build_requires_result(req_fp, expansion_score)
+                    if built is None:
+                        continue
+                    result, result_tokens = built
+
+                    # Token budget check — if adding this atom would exceed the
+                    # budget, stop expansion entirely (don't try smaller atoms,
+                    # since the retrieved ones are meant to be coherent).
+                    if tokens_used + result_tokens > token_budget:
+                        logger.info(
+                            "requires_expansion | token budget hit: used=%d + atom=%d > budget=%d (atom=%s)",
+                            tokens_used, result_tokens, token_budget, req_fp,
+                        )
+                        frontier = []  # break outer loop
+                        break
+
+                    bonus.append(result)
+                    tokens_used += result_tokens
+                    seen_files.add(req_fp)
+                    next_frontier.append((req_fp, depth + 1))
+
+                    if len(bonus) >= max_atoms:
+                        break
+                if len(bonus) >= max_atoms:
+                    break
+            frontier = next_frontier
+
+        if bonus:
+            logger.info(
+                "requires_expansion | appended=%d atoms tokens=%d/%d files=%s",
+                len(bonus), tokens_used, token_budget,
+                [b.source_file for b in bonus],
+            )
+        return bonus
+
+    def _build_requires_indices(self) -> None:
+        """Build (and cache) the id/basename indices used to resolve `requires:` entries."""
+        id_index: dict[str, str] = {}
+        basename_index: dict[str, list[str]] = {}
+        for path, pf in self.pack.files.items():
+            if pf.provenance and pf.provenance.id:
+                id_index[pf.provenance.id] = path
+            basename = path.rsplit("/", 1)[-1]
+            basename_index.setdefault(basename, []).append(path)
+            # Also index the stem (basename without .md) so bare concept slugs work.
+            if basename.endswith(".md"):
+                basename_index.setdefault(basename[:-3], []).append(path)
+        self._requires_id_index = id_index
+        self._requires_basename_index = basename_index
+
+    def _resolve_requires_for_path(self, file_path: str) -> list[str]:
+        """Given a pack-relative file path, return the resolved paths of its `requires:` entries.
+
+        Unknown entries are logged and skipped. Self-references are filtered out.
+        """
+        pf = self.pack.files.get(file_path)
+        if pf is None or not pf.requires:
+            return []
+
+        if not hasattr(self, "_requires_id_index"):
+            self._build_requires_indices()
+
+        resolved: list[str] = []
+        for entry in pf.requires:
+            if not isinstance(entry, str) or not entry.strip():
+                continue
+            target = self._resolve_requires_entry(entry, origin_path=file_path)
+            if target is None:
+                logger.warning(
+                    "requires_expansion | unresolved requires entry '%s' in '%s'",
+                    entry, file_path,
+                )
+                continue
+            if target == file_path:
+                continue  # self-reference, skip silently
+            resolved.append(target)
+        return resolved
+
+    def _resolve_requires_entry(self, entry: str, origin_path: str) -> str | None:
+        """Resolve a single requires: string to a pack-relative file path, or None.
+
+        Resolution order:
+          1. Full provenance id match (e.g. 'ezt-designer/concepts/foo')
+          2. Exact pack-relative path (e.g. 'concepts/foo.md')
+          3. Same-directory basename (e.g. 'foo.md' or 'foo' next to origin)
+          4. Unique basename anywhere in pack (last resort)
+        """
+        # 1. Full id
+        if entry in self._requires_id_index:
+            return self._requires_id_index[entry]
+
+        # 2. Exact path
+        if entry in self.pack.files:
+            return entry
+
+        # Normalize to a basename-like token for remaining lookups.
+        token = entry.rsplit("/", 1)[-1]
+
+        # 3. Same-directory resolution (schema examples use bare 'foo.md')
+        origin_dir = origin_path.rsplit("/", 1)[0] if "/" in origin_path else ""
+        if origin_dir:
+            for candidate in (f"{origin_dir}/{token}", f"{origin_dir}/{token}.md"):
+                if candidate in self.pack.files:
+                    return candidate
+
+        # 4. Unique basename anywhere
+        candidates = self._requires_basename_index.get(token) or []
+        if not candidates and not token.endswith(".md"):
+            candidates = self._requires_basename_index.get(f"{token}.md") or []
+        if len(candidates) == 1:
+            return candidates[0]
+        return None
+
+    def _build_requires_result(
+        self,
+        file_path: str,
+        expansion_score: float,
+    ) -> tuple[SearchResult, int] | None:
+        """Load the primary chunk for `file_path` and wrap it as a requires-expanded result.
+
+        Returns (result, token_count) or None if the chunk isn't indexed.
+        """
+        chunks_by_fp = self.store.get_chunks_by_file_paths([file_path])
+        fp_chunks = chunks_by_fp.get(file_path, [])
+        primary = next(
+            (c for c in fp_chunks if c.get("chunk_index", 0) == 0),
+            None,
+        )
+        if primary is None:
+            logger.warning(
+                "requires_expansion | no primary chunk indexed for '%s'", file_path,
+            )
+            return None
+
+        tags = _parse_tags(primary.get("tags", "[]"))
+
+        # Token budget: prefer the loaded PackFile estimate if available; else word-based.
+        pf = self.pack.files.get(file_path)
+        if pf and pf.size_tokens:
+            tokens = pf.size_tokens
+        else:
+            content = primary.get("content", "") or ""
+            tokens = max(1, int(len(content.split()) * 1.3))
+
+        result = SearchResult(
+            text=primary.get("content", ""),
+            source_file=primary.get("file_path", file_path),
+            id=primary.get("prov_id"),
+            content_hash=primary.get("content_hash"),
+            verified_at=primary.get("verified_at"),
+            score=round(float(expansion_score), 4),
+            type=primary.get("type"),
+            tags=tags,
+            chunk_index=primary.get("chunk_index", 0),
+            title=primary.get("title"),
+            graph_expanded=False,
+            requires_expanded=True,
+        )
+        return result, tokens
 
     def _graph_widen_candidates(
         self,

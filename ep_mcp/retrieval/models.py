@@ -28,3 +28,4 @@ class SearchResult(BaseModel):
     chunk_index: int = Field(0, description="0 for whole-file chunks")
     title: str | None = Field(None, description="Content title")
     graph_expanded: bool = Field(False, description="Whether this result was added via post-top-K graph expansion")
+    requires_expanded: bool = Field(False, description="Whether this result was added via post-top-K requires: expansion (atomic-conceptual dependencies)")

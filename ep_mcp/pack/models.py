@@ -25,7 +25,11 @@ class PackFile(BaseModel):
     tags: list[str] = Field(default_factory=list)
     provenance: Provenance = Field(default_factory=Provenance)
     retrieval_strategy: str = Field(
-        "standard", description="standard | always | on_demand"
+        "standard", description="standard | always | on_demand | atomic"
+    )
+    requires: list[str] = Field(
+        default_factory=list,
+        description="Atomic-conceptual: paths of atoms that should auto-expand when this atom is retrieved. Directional (A requires B does not imply B requires A).",
     )
     content: str = Field("", description="Markdown content, frontmatter stripped")
     raw_content: str = Field("", description="Full markdown content with frontmatter")

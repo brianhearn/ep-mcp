@@ -128,6 +128,21 @@ class RetrievalConfig(BaseModel):
     graph_widen_min_seed_score: float = 0.38
     graph_widen_min_neighbor_score: float = 0.25
 
+    # `requires:` expansion — atomic-conceptual dependency auto-retrieval (schema v4.1+).
+    # When a top-K result's source file declares `requires: [B, C, ...]` in frontmatter,
+    # those atoms are appended to the result set (skipping any already-present files).
+    # Directional: A requires B includes B when A is retrieved; retrieving B alone does
+    # NOT pull A. Walks transitively up to `requires_expansion_max_depth` hops, with
+    # per-query caps on total atoms added and cumulative token budget.
+    #
+    # These are appended AFTER graph expansion and AFTER the max_results slice — they do
+    # not compete for top-K slots. Each expanded atom is flagged `requires_expanded=True`.
+    requires_expansion_enabled: bool = True
+    requires_expansion_max_depth: int = 2       # transitive hop cap
+    requires_expansion_max_atoms: int = 3       # max extra atoms appended per query
+    requires_expansion_token_budget: int = 3500 # cumulative token budget for appended atoms
+    requires_expansion_score: float = 0.30      # displayed score for appended atoms (below typical threshold)
+
 
 class ServerConfig(BaseModel):
     """Top-level server configuration."""
