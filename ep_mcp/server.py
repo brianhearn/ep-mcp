@@ -388,6 +388,7 @@ def build_app(
                         "type": r.type,
                         "tags": r.tags,
                         "graph_expanded": r.graph_expanded,
+                        "requires_expanded": r.requires_expanded,
                     }
                     for r in raw_results
                 ],
