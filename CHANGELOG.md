@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **`POST /search` endpoint with caller-supplied query vector** — new `vector: list[float] | None` field on `SearchRequest` lets clients pass a pre-computed query embedding so the engine can skip its own `embed_query()` call. The HTTP layer validates the vector dimension against the pack's configured embedding provider (returns 400 on mismatch). Enables low-latency flows where the client has already embedded the query upstream (e.g. OpenClaw's memory plugin computing a single Gemini embedding and fanning out to multiple capabilities). `GET /search` is unchanged and still performs the embed server-side. The POST body mirrors the GET query params (`query`, `pack`, `n`, `type`, `tags`, plus optional `vector`, `graph_expansion_confidence_threshold`, `graph_expansion_min_score`) and the response includes `vector_supplied: bool` for client-side sanity checks. Verified on expertpack.ai/mcp: POST with a 3072-d Gemini query vector returns identical scores to GET.
+
 
 ## [0.4.0] — 2026-04-19 — Schema v4.1 `requires:` expansion + retrieval pipeline hardening
 

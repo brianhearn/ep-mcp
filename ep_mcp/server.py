@@ -397,10 +397,132 @@ def build_app(
             logger.exception("search endpoint error | pack=%s query=%r", slug, q)
             return JSONResponse({"error": str(exc)}, status_code=500)
 
+    async def search_post(request: Request) -> JSONResponse:
+        """POST /search with JSON body.
+
+        Same semantics as ``GET /search`` but accepts a JSON body so clients can
+        pass a pre-computed query embedding (``vector``) without blowing out the
+        URL. This is the entry point used by OpenClaw's memory plugin to avoid
+        a second round-trip to Gemini when the caller already embedded the
+        query upstream.
+
+        Body schema::
+
+            {
+              "query": "search string",
+              "pack": "ezt-designer",
+              "n": 10,
+              "type": null,
+              "tags": null,
+              "vector": [float, ...],          // optional
+              "graph_expansion_confidence_threshold": 0.55,  // optional
+              "graph_expansion_min_score": 0.45              // optional
+            }
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "JSON body must be an object"}, status_code=400)
+
+        q = (body.get("query") or "").strip()
+        slug = (body.get("pack") or "").strip()
+        n = int(body.get("n", 10))
+        type_filter = body.get("type")
+        tags_raw = body.get("tags")
+        if isinstance(tags_raw, str):
+            tags = [t.strip() for t in tags_raw.split(",") if t.strip()]
+        elif isinstance(tags_raw, list):
+            tags = [str(t).strip() for t in tags_raw if str(t).strip()]
+        else:
+            tags = None
+
+        conf_raw = body.get("graph_expansion_confidence_threshold")
+        min_raw = body.get("graph_expansion_min_score")
+        conf_override = float(conf_raw) if conf_raw is not None else None
+        min_override = float(min_raw) if min_raw is not None else None
+
+        vector = body.get("vector")
+        if vector is not None:
+            if not isinstance(vector, list) or not all(
+                isinstance(v, (int, float)) for v in vector
+            ):
+                return JSONResponse(
+                    {"error": "vector must be a list of numbers"}, status_code=400,
+                )
+            # Convert ints to floats for downstream arithmetic safety.
+            vector = [float(v) for v in vector]
+
+        if not q:
+            return JSONResponse({"error": "Missing required parameter: query"}, status_code=400)
+        if not slug:
+            return JSONResponse({"error": "Missing required parameter: pack"}, status_code=400)
+        if slug not in pack_instances:
+            return JSONResponse({"error": f"Unknown pack: {slug}"}, status_code=404)
+
+        # Auth check
+        auth_header = request.headers.get("Authorization", "")
+        if not auth.authenticate(auth_header, slug):
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        # Dimension validation against the pack's configured embedding provider.
+        if vector is not None:
+            inst = pack_instances[slug]
+            expected_dim = getattr(inst.engine.provider, "dimension", None)
+            if expected_dim is not None and len(vector) != expected_dim:
+                return JSONResponse(
+                    {
+                        "error": (
+                            f"vector dimension mismatch: got {len(vector)}, "
+                            f"expected {expected_dim} for pack '{slug}'"
+                        )
+                    },
+                    status_code=400,
+                )
+
+        try:
+            engine = pack_instances[slug].engine
+            from .retrieval.models import SearchRequest
+            search_req = SearchRequest(
+                query=q,
+                type=type_filter,
+                tags=tags,
+                max_results=n,
+                vector=vector,
+            )
+            raw_results = await engine.search(
+                search_req,
+                graph_expansion_confidence_threshold=conf_override,
+                graph_expansion_min_score=min_override,
+            )
+            return JSONResponse({
+                "query": q,
+                "pack": slug,
+                "vector_supplied": vector is not None,
+                "results": [
+                    {
+                        "source_file": r.source_file,
+                        "title": r.title,
+                        "text": r.text,
+                        "score": round(r.score, 4),
+                        "type": r.type,
+                        "tags": r.tags,
+                        "graph_expanded": r.graph_expanded,
+                        "requires_expanded": r.requires_expanded,
+                    }
+                    for r in raw_results
+                ],
+            })
+        except Exception as exc:
+            logger.exception("search(POST) endpoint error | pack=%s query=%r", slug, q)
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
     routes = [
         Route("/health", health),
         Route("/packs", list_packs),
         Route("/search", search),
+        Route("/search", search_post, methods=["POST"]),
     ]
 
     for slug, sm, mcp_app in session_managers:

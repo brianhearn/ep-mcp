@@ -124,16 +124,32 @@ class RetrievalEngine:
         # Step 2: Dual search
         # Embedding may fail (provider outage, quota, etc.). Gracefully degrade to
         # BM25-only mode using lexical scoring rather than crashing the whole request.
+        # If the caller supplied a pre-computed vector, skip the embed call entirely.
         query_embedding: list[float] | None = None
         embedding_failed = False
-        try:
-            query_embedding = await self.provider.embed_query(request.query)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "[PIPELINE] embedding failed (%s: %s) — degrading to BM25-only mode",
-                type(exc).__name__, exc,
-            )
-            embedding_failed = True
+        if request.vector is not None:
+            expected_dim = getattr(self.provider, "dimension", None)
+            if expected_dim is not None and len(request.vector) != expected_dim:
+                logger.warning(
+                    "[PIPELINE] caller-supplied vector dim=%d != provider dim=%d — falling back to embed_query",
+                    len(request.vector), expected_dim,
+                )
+            else:
+                query_embedding = request.vector
+                logger.debug(
+                    "[PIPELINE] using caller-supplied query embedding (dim=%d)",
+                    len(request.vector),
+                )
+
+        if query_embedding is None:
+            try:
+                query_embedding = await self.provider.embed_query(request.query)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[PIPELINE] embedding failed (%s: %s) — degrading to BM25-only mode",
+                    type(exc).__name__, exc,
+                )
+                embedding_failed = True
 
         if embedding_failed:
             return await self._search_bm25_fallback(request, max_results, candidate_count)
