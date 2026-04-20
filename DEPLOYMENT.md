@@ -119,14 +119,20 @@ location /mcp {
 
 ## 7. Re-indexing
 
-When pack content changes, delete the index and restart:
+For **content-only changes** (editing existing atom files), the incremental indexer detects changed files by content hash — just restart the service without wiping the index:
 
 ```bash
-rm /path/to/pack/.ep-mcp/index.db
 systemctl restart ep-mcp
 ```
 
-The server rebuilds the full index on next startup. For large packs (1000+ chunks) expect 2–5 minutes (limited by embedding API rate limits).
+Only wipe the index when the **schema or chunking logic changes** (i.e. code updates that affect how chunks are generated):
+
+```bash
+rm -rf /path/to/pack/.ep-mcp/
+systemctl restart ep-mcp
+```
+
+The server rebuilds the full index on next startup. For large packs (~650 chunks) expect 30–60 seconds (Gemini embedding API). **Avoid multiple full reindexes in quick succession** — the Gemini free tier has hourly embedding quotas; repeated cold starts will exhaust them and cause startup failures (RESOURCE_EXHAUSTED 429).
 
 ## 8. Updating the server
 
