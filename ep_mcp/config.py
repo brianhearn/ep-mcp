@@ -158,6 +158,12 @@ class ServerConfig(BaseModel):
     # Requires: pip install watchdog. Not for production use.
     dev_mode_watch: bool = False
 
+    # Query log — append one JSONL record per ep_search call (query, chunks, scores,
+    # latency, cache hit). Disabled when None (default). Useful for monitoring
+    # production queries and measuring retrieval quality over time.
+    # Example: query_log_path: "/var/log/ep-mcp-queries.jsonl"
+    query_log_path: str | None = None
+
 
 def load_config(config_path: str | Path) -> ServerConfig:
     """Load server configuration from a YAML file.
@@ -209,6 +215,7 @@ def load_config(config_path: str | Path) -> ServerConfig:
         port=server_raw.get("port", 8000),
         log_level=server_raw.get("log_level", "info"),
         dev_mode_watch=server_raw.get("dev_mode_watch", False),
+        query_log_path=server_raw.get("query_log_path"),
         packs=packs,
         embedding=embedding,
         retrieval=retrieval,

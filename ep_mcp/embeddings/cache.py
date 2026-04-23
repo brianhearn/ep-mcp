@@ -37,6 +37,8 @@ class QueryEmbeddingCache(EmbeddingProvider):
         self._cache_path = Path(cache_path)
         self._conn: sqlite3.Connection | None = None
         self._lock = asyncio.Lock()
+        #: Set after each embed_query() call — True = served from cache.
+        self.last_cache_hit: bool = False
 
     # ── EmbeddingProvider interface ───────────────────────────────────────────
 
@@ -60,9 +62,11 @@ class QueryEmbeddingCache(EmbeddingProvider):
         hit = self._get(key)
         if hit is not None:
             logger.debug("Query embed cache HIT (dim=%d, query=%r)", self.dimension, query[:60])
+            self.last_cache_hit = True
             return hit
 
         logger.debug("Query embed cache MISS — calling provider (query=%r)", query[:60])
+        self.last_cache_hit = False
         t0 = time.monotonic()
         embedding = await self._provider.embed_query(query)
         elapsed = time.monotonic() - t0

@@ -29,7 +29,7 @@ from .prompts.pack_prompts import register_prompts
 from .resources.pack_resources import register_resources
 from .tools.ep_graph_traverse import ep_graph_traverse
 from .tools.ep_list_topics import ep_list_topics
-from .tools.ep_search import ep_search
+from .tools.ep_search import ep_search, log_query
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +77,7 @@ def create_pack_mcp(
     pack: Pack,
     engine: RetrievalEngine,
     graph_lookup: GraphLookup | None = None,
+    query_log_path: str | None = None,
 ):
     """Create a FastMCP instance with tools, resources, and prompts registered for a pack."""
     from mcp.server.fastmcp import FastMCP
@@ -113,7 +114,10 @@ def create_pack_mcp(
             JSON array of ranked results with provenance metadata.
         """
         try:
-            results = await ep_search(engine, query, type, tags, max_results)
+            results = await ep_search(
+                engine, query, type, tags, max_results,
+                query_log_path=query_log_path,
+            )
             return json.dumps(results, indent=2)
         except Exception as e:
             logger.exception(
@@ -248,7 +252,7 @@ async def init_pack(
         enabled=reranker_cfg.enabled,
     )
     engine = RetrievalEngine(pack, store, provider, retrieval_cfg, graph_lookup, reranker=reranker)
-    mcp = create_pack_mcp(slug, pack, engine, graph_lookup)
+    mcp = create_pack_mcp(slug, pack, engine, graph_lookup, query_log_path=config.query_log_path)
 
     return PackInstance(pack=pack, store=store, engine=engine, mcp=mcp, index_manager=manager)
 
@@ -370,12 +374,21 @@ def build_app(
         try:
             engine = pack_instances[slug].engine
             from .retrieval.models import SearchRequest
+            import time as _time
             search_req = SearchRequest(query=q, type=type_filter, tags=tags, max_results=n)
+            _t0 = _time.monotonic()
             raw_results = await engine.search(
                 search_req,
                 graph_expansion_confidence_threshold=conf_override,
                 graph_expansion_min_score=min_override,
             )
+            _elapsed_ms = (_time.monotonic() - _t0) * 1000
+            if config.query_log_path:
+                _embed_cached = getattr(engine.provider, "last_cache_hit", None)
+                log_query(
+                    config.query_log_path, slug, q, raw_results,
+                    _elapsed_ms, _embed_cached, type=type_filter, tags=tags,
+                )
             return JSONResponse({
                 "query": q,
                 "pack": slug,
@@ -484,6 +497,7 @@ def build_app(
         try:
             engine = pack_instances[slug].engine
             from .retrieval.models import SearchRequest
+            import time as _time
             search_req = SearchRequest(
                 query=q,
                 type=type_filter,
@@ -491,11 +505,19 @@ def build_app(
                 max_results=n,
                 vector=vector,
             )
+            _t0 = _time.monotonic()
             raw_results = await engine.search(
                 search_req,
                 graph_expansion_confidence_threshold=conf_override,
                 graph_expansion_min_score=min_override,
             )
+            _elapsed_ms = (_time.monotonic() - _t0) * 1000
+            if config.query_log_path:
+                _embed_cached = getattr(engine.provider, "last_cache_hit", None)
+                log_query(
+                    config.query_log_path, slug, q, raw_results,
+                    _elapsed_ms, _embed_cached, type=type_filter, tags=tags,
+                )
             return JSONResponse({
                 "query": q,
                 "pack": slug,
