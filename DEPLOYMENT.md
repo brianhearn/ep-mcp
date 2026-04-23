@@ -171,4 +171,66 @@ Expected response: JSON with a `results` array. Each result contains `text`, `so
 - API keys are **per-pack**. Use different keys for different clients.
 - Never commit `.env` or `config.yaml` containing real keys.
 
+## 11. Query logging
+
+EP MCP can write a structured JSONL log of every search call — useful for monitoring production queries, measuring retrieval quality, and building crowdsourced FAQs from real user questions.
+
+### Enable
+
+Add one line to the `server:` block in `config.yaml`:
+
+```yaml
+server:
+  host: "127.0.0.1"
+  port: 8100
+  log_level: "info"
+  query_log_path: "/var/log/ep-mcp-queries.jsonl"
+```
+
+The directory is created automatically if it doesn't exist. Restart the service after changing config.
+
+### Log record format
+
+Each line is a JSON object:
+
+```json
+{
+  "ts": "2026-04-23T13:54:45Z",
+  "pack": "ezt-designer",
+  "query": "how do I create a territory",
+  "type": null,
+  "tags": null,
+  "result_count": 3,
+  "chunks": [
+    "workflows/wf-create-territory-basic-boundary.md",
+    "workflows/wf-create-territory-drawing-custom.md",
+    "faq/faq-general.md"
+  ],
+  "scores": [0.6625, 0.3377, 0.3246],
+  "top_score": 0.6625,
+  "elapsed_ms": 5157.9,
+  "embed_cached": false
+}
+```
+
+| Field | Description |
+|---|---|
+| `ts` | UTC timestamp (ISO-8601) |
+| `pack` | Pack slug |
+| `query` | Raw query string |
+| `type` / `tags` | Filter params passed by the client (null if not used) |
+| `result_count` | Number of chunks returned |
+| `chunks` | Source file paths for returned results (pack-relative) |
+| `scores` | Relevance scores parallel to `chunks` |
+| `top_score` | Score of the first result (convenience field) |
+| `elapsed_ms` | Total search latency in milliseconds |
+| `embed_cached` | `true` = embedding served from cache (warm); `false` = live Gemini API call (cold); `null` = no cache wrapper |
+
+### Notes
+
+- All three search paths write to the log: `GET /search`, `POST /search`, and the MCP `ep_search` tool.
+- The log is append-only. Rotate with `logrotate` or a cron job if needed.
+- `embed_cached: false` queries show true end-to-end latency; `embed_cached: true` queries reflect the warm path (embedding served from SQLite cache, ~1ms vs ~4s).
+- When `query_log_path` is not set (default), no log file is created and no performance overhead is added.
+
 ---

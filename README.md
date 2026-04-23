@@ -55,6 +55,8 @@ server:
   host: "127.0.0.1"
   port: 8000
   log_level: "info"
+  # Optional: structured query log (one JSONL record per search call)
+  # query_log_path: "/var/log/ep-mcp-queries.jsonl"
 
 packs:
   - slug: "my-pack"
