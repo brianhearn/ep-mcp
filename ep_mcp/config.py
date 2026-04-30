@@ -23,15 +23,30 @@ class PackConfig(BaseModel):
 
 
 class EmbeddingConfig(BaseModel):
-    """Embedding provider configuration."""
+    """Embedding provider configuration.
+
+    provider options:
+      - "gemini"       : Google Gemini (default). Requires GEMINI_API_KEY.
+      - "azure-openai" : Azure OpenAI. Requires AZURE_OPENAI_ENDPOINT and
+                         AZURE_OPENAI_API_KEY (or set azure_endpoint / azure_api_key).
+
+    Azure OpenAI models:
+      - text-embedding-3-large  (3072d, recommended — same dimension as Gemini default)
+      - text-embedding-3-small  (1536d, lighter/cheaper)
+      - text-embedding-ada-002  (1536d, legacy)
+
+    Note: embedding dimensions must match at index time. Changing provider on an
+    existing index requires a full reindex (rm -rf <pack>/.ep-mcp/ then restart).
+    """
 
     provider: str = "gemini"
     model: str = "gemini-embedding-001"
-    output_dimensionality: int | None = None  # MRL: None=3072d full, 768=4x smaller (0.26% loss)
-    # Azure-specific
-    azure_endpoint: str | None = None
+    output_dimensionality: int | None = None  # MRL: None=full dim, e.g. 768=4x smaller
+    # Azure OpenAI — required when provider="azure-openai"
+    azure_endpoint: str | None = None        # overrides AZURE_OPENAI_ENDPOINT env var
+    azure_api_key: str | None = None         # overrides AZURE_OPENAI_API_KEY env var
     azure_api_version: str = "2024-10-21"
-    azure_deployment: str | None = None
+    azure_deployment: str | None = None      # defaults to model name if omitted
 
 
 

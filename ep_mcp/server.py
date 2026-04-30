@@ -47,13 +47,27 @@ class PackInstance:
 
 def create_embedding_provider(config: ServerConfig) -> EmbeddingProvider:
     """Create the configured embedding provider."""
+    from .embeddings.azure_openai import AzureOpenAIEmbeddingProvider
+
     emb = config.embedding
     if emb.provider == "gemini":
         return GeminiEmbeddingProvider(
             model=emb.model,
             output_dimensionality=emb.output_dimensionality,
         )
-    raise ValueError(f"Unsupported embedding provider: {emb.provider}")
+    if emb.provider == "azure-openai":
+        return AzureOpenAIEmbeddingProvider(
+            model=emb.model or "text-embedding-3-large",
+            azure_endpoint=emb.azure_endpoint,
+            api_key=emb.azure_api_key,
+            api_version=emb.azure_api_version,
+            azure_deployment=emb.azure_deployment,
+            output_dimensionality=emb.output_dimensionality,
+        )
+    raise ValueError(
+        f"Unsupported embedding provider: {emb.provider!r}. "
+        f"Supported: 'gemini', 'azure-openai'"
+    )
 
 
 def _get_server_instructions(pack: Pack) -> str:

@@ -65,11 +65,12 @@ packs:
       - "your-secret-key-here"
 
 embedding:
-  provider: "gemini"
-  model: "gemini-embedding-001"
-  azure_endpoint: null
-  azure_api_version: "2024-10-21"
-  azure_deployment: null
+  provider: "gemini"                 # "gemini" (default) or "azure-openai"
+  model: "gemini-embedding-001"       # see provider notes below
+  # azure_endpoint: null             # required for azure-openai (or AZURE_OPENAI_ENDPOINT env)
+  # azure_api_key: null              # required for azure-openai (or AZURE_OPENAI_API_KEY env)
+  # azure_api_version: "2024-10-21"
+  # azure_deployment: null           # defaults to model name
 
 retrieval:
   vector_weight: 0.7
@@ -110,6 +111,27 @@ retrieval:
 
 **Note:** All `retrieval:` fields are optional — defaults shown above. See [ARCHITECTURE.md §5](ARCHITECTURE.md) for the full 8-step pipeline.
 
+#### Azure OpenAI embeddings
+
+To use Azure OpenAI instead of Gemini (useful for all-Azure deployments):
+
+```yaml
+embedding:
+  provider: "azure-openai"
+  model: "text-embedding-3-large"     # 3072d — same dimension as Gemini default
+  # model: "text-embedding-3-small"  # 1536d — lighter/cheaper alternative
+  azure_endpoint: "https://<your-resource>.openai.azure.com/"
+  azure_api_version: "2024-10-21"
+  # azure_deployment: "my-deployment" # defaults to model name if omitted
+  # output_dimensionality: 1536       # optional MRL shortening (3-large only)
+```
+
+Set `AZURE_OPENAI_API_KEY` in the environment (or set `azure_api_key:` in config).
+
+> **Important:** embedding dimensions must match at index time. If you change provider
+> on an existing pack, delete the index directory (`rm -rf <pack>/.ep-mcp/`) before
+> restarting so the server rebuilds with the new vectors.
+
 ### Running
 
 ```bash
@@ -131,8 +153,8 @@ Only the key for your configured embedding provider is required.
 | Variable                  | Required | Description |
 |---------------------------|----------|-------------|
 | `GEMINI_API_KEY`          | If `embedding.provider: gemini` | Gemini embedding API key |
-| `AZURE_OPENAI_API_KEY`    | If `embedding.provider: azure_openai` | Azure OpenAI embedding API key |
-| `OPENAI_API_KEY`          | If `embedding.provider: openai` | OpenAI embedding API key |
+| `AZURE_OPENAI_ENDPOINT`   | If `embedding.provider: azure-openai` | Azure OpenAI resource endpoint |
+| `AZURE_OPENAI_API_KEY`    | If `embedding.provider: azure-openai` | Azure OpenAI API key |
 | `EP_MCP_KEY_{SLUG}`       | Optional | Per-pack API key override (uppercase slug, hyphens→underscores) |
 | `EP_MCP_REMOTE_HOST`      | Optional | Deploy target for `scripts/deploy.sh` |
 | `EP_MCP_REMOTE_SRC`       | Optional | Remote source path for `deploy.sh` |
