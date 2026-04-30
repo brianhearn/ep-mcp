@@ -24,6 +24,7 @@ Pipeline:
 import json
 import logging
 import struct
+import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -107,6 +108,8 @@ class RetrievalEngine:
         """
         max_results = request.max_results
         candidate_count = max_results * self.config.candidate_multiplier
+        _t_start = time.perf_counter()
+        _t = _t_start  # rolling stage timer
 
         # Step 1: Intent classification → adaptive weight selection
         vector_weight = self.config.vector_weight
@@ -154,6 +157,13 @@ class RetrievalEngine:
         if embedding_failed:
             return await self._search_bm25_fallback(request, max_results, candidate_count)
 
+        _t_embed = time.perf_counter()
+        logger.info(
+            "[TIMING] stage=embed elapsed_ms=%.1f total_ms=%.1f",
+            (_t_embed - _t) * 1000, (_t_embed - _t_start) * 1000,
+        )
+        _t = _t_embed
+
         vec_results = self.store.vector_search(query_embedding, limit=candidate_count)
         bm25_results = self.store.bm25_search(
             request.query,
@@ -189,6 +199,13 @@ class RetrievalEngine:
             text_weight=text_weight,
             bm25_cap=self.config.bm25_cap,
         )
+
+        _t_fusion = time.perf_counter()
+        logger.info(
+            "[TIMING] stage=dual_search+fusion elapsed_ms=%.1f total_ms=%.1f",
+            (_t_fusion - _t) * 1000, (_t_fusion - _t_start) * 1000,
+        )
+        _t = _t_fusion
 
         # Debug: log top-20 fused scores before threshold
         _log_top_chunks("after_fusion", fused, chunks_store=self.store, top_n=20)
@@ -239,6 +256,13 @@ class RetrievalEngine:
             short_penalty=self.config.length_penalty_factor,
         )
 
+        _t_boosts = time.perf_counter()
+        logger.info(
+            "[TIMING] stage=threshold+boosts+penalty elapsed_ms=%.1f total_ms=%.1f",
+            (_t_boosts - _t) * 1000, (_t_boosts - _t_start) * 1000,
+        )
+        _t = _t_boosts
+
         # Debug: log top-20 after boosts + penalty
         _log_top_chunks("after_boosts", fused, chunks_store=self.store, top_n=20)
 
@@ -274,6 +298,12 @@ class RetrievalEngine:
             )
             # Debug: log top-20 after MMR
             _log_top_chunks_scored("after_mmr", scored_list[:20], chunks_store=self.store)
+            _t_mmr = time.perf_counter()
+            logger.info(
+                "[TIMING] stage=mmr elapsed_ms=%.1f total_ms=%.1f",
+                (_t_mmr - _t) * 1000, (_t_mmr - _t_start) * 1000,
+            )
+            _t = _t_mmr
         else:
             scored_list = scored_list[:mmr_k]
 
@@ -322,6 +352,13 @@ class RetrievalEngine:
             top_k_results.append(result)
             top_k_chunk_ids_for_lookup[chunk_id] = result
 
+        _t_pre_graph = time.perf_counter()
+        logger.info(
+            "[TIMING] stage=dedup+build_results elapsed_ms=%.1f total_ms=%.1f",
+            (_t_pre_graph - _t) * 1000, (_t_pre_graph - _t_start) * 1000,
+        )
+        _t = _t_pre_graph
+
         # Step 7: Graph expansion → score and merge bonus neighbors into result pool
         bonus_results = self._apply_graph_expansion(
             results=top_k_results,
@@ -329,6 +366,13 @@ class RetrievalEngine:
             confidence_threshold_override=graph_expansion_confidence_threshold,
             min_score_override=graph_expansion_min_score,
         )
+
+        _t_graph_exp = time.perf_counter()
+        logger.info(
+            "[TIMING] stage=graph_expansion elapsed_ms=%.1f total_ms=%.1f",
+            (_t_graph_exp - _t) * 1000, (_t_graph_exp - _t_start) * 1000,
+        )
+        _t = _t_graph_exp
 
         # Step 7b: Merge top-K + bonus with reserved-slot guarantee.
         #
@@ -365,6 +409,12 @@ class RetrievalEngine:
             requires_bonus = self._apply_requires_expansion(final_top_k)
             if requires_bonus:
                 final_top_k = final_top_k + requires_bonus
+
+        _t_end = time.perf_counter()
+        logger.info(
+            "[TIMING] stage=requires_expansion+total elapsed_ms=%.1f total_ms=%.1f results=%d",
+            (_t_end - _t) * 1000, (_t_end - _t_start) * 1000, len(final_top_k),
+        )
 
         return final_top_k
 

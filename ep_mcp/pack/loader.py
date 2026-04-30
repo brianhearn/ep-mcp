@@ -26,7 +26,11 @@ class PackLoadError(Exception):
     """Raised when a pack cannot be loaded."""
 
 
-def load_pack(pack_dir: str | Path, slug_override: str | None = None) -> Pack:
+def load_pack(
+    pack_dir: str | Path,
+    slug_override: str | None = None,
+    index_dir_override: str | Path | None = None,
+) -> Pack:
     """Load an ExpertPack from a directory.
 
     Args:
@@ -75,8 +79,12 @@ def load_pack(pack_dir: str | Path, slug_override: str | None = None) -> Pack:
             len(graph.edges),
         )
 
-    # Build index path
-    index_dir = pack_path / ".ep-mcp"
+    # Build index path — use override when provided (e.g. separate persistent volume),
+    # otherwise default to <pack_path>/.ep-mcp/ (co-located with pack files).
+    if index_dir_override is not None:
+        index_dir = Path(index_dir_override).resolve()
+    else:
+        index_dir = pack_path / ".ep-mcp"
     index_path = str(index_dir / "index.db")
 
     # Resolve always-tier file paths

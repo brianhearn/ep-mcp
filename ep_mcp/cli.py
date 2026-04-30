@@ -61,9 +61,13 @@ def serve(config_path: str, transport: str) -> None:
 
     async def startup():
         provider = create_embedding_provider(config)
-        # Wrap with query embedding cache — warm latency ~1ms vs ~4s live
-        _cache_dir = Path(config.packs[0].path) / ".ep-mcp"
-        provider = QueryEmbeddingCache(provider, cache_path=_cache_dir / "query_embed_cache.db")
+        # Wrap with query embedding cache — warm latency ~1ms vs ~4s live.
+        # Use the first pack's index_dir if configured (so the cache survives
+        # container restarts when packs are copied to /tmp but the index lives
+        # on a persistent volume).
+        first_pack = config.packs[0]
+        _cache_base = Path(first_pack.index_dir) if first_pack.index_dir else Path(first_pack.path) / ".ep-mcp"
+        provider = QueryEmbeddingCache(provider, cache_path=_cache_base / "query_embed_cache.db")
         pack_instances = {}
         for pack_config in config.packs:
             click.echo(f"Loading pack: {pack_config.slug} from {pack_config.path}")
@@ -72,6 +76,7 @@ def serve(config_path: str, transport: str) -> None:
                 pack_path=pack_config.path,
                 provider=provider,
                 config=config,
+                index_dir=pack_config.index_dir,
             )
             pack_instances[pack_config.slug] = inst
             click.echo(f"  \u2705 {inst.pack.name}: {len(inst.pack.files)} files, "

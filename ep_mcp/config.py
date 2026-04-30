@@ -15,6 +15,17 @@ class PackConfig(BaseModel):
     path: str
     api_keys: list[str] = Field(default_factory=list)
 
+    # Optional override for the index/cache directory.
+    # Default: <pack_path>/.ep-mcp/  (co-located with pack files).
+    # Set this when the pack files live on a non-persistent path (e.g. /tmp) and
+    # you want the SQLite index + query-embedding cache to survive container restarts
+    # on a separately-mounted persistent volume.
+    #
+    # Example (Azure Container Apps):
+    #   path: /tmp/packs/ezt-designer         # pack files copied from Azure Files
+    #   index_dir: /mnt/cache/ezt-designer    # persistent Azure Files volume mount
+    index_dir: str | None = None
+
     # Optional pack-level overrides for graph expansion (fall back to RetrievalConfig globals)
     graph_expansion_enabled: bool | None = None
     graph_expansion_confidence_threshold: float | None = None
