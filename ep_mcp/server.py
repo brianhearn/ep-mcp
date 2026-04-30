@@ -230,9 +230,10 @@ async def init_pack(
     pack_path: str,
     provider: EmbeddingProvider,
     config: ServerConfig,
+    index_dir: str | None = None,
 ) -> PackInstance:
     """Load, index, and initialize a pack with MCP tools."""
-    pack = load_pack(pack_path, slug_override=slug)
+    pack = load_pack(pack_path, slug_override=slug, index_dir_override=index_dir)
     store = SQLiteStore(pack.index_path, embedding_dimension=provider.dimension)
     store.open()
 
