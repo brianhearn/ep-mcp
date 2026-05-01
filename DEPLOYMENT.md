@@ -47,10 +47,18 @@ All retrieval options live under the `retrieval:` block in `config.yaml`. Key op
 
 ```yaml
 retrieval:
+  # Results returned per query — keep <= reranker.candidate_pool_size for best reranker coverage
+  default_max_results: 20
+
   # Hybrid search weights (defaults; intent routing overrides per-query)
   vector_weight: 0.7
   text_weight: 0.3
   candidate_multiplier: 8
+
+  # MMR (Maximal Marginal Relevance) — diversity re-ranking after fusion
+  # lambda: 1.0 = pure relevance, 0.0 = pure diversity. 0.95 recommended for domain packs.
+  mmr_enabled: true
+  mmr_lambda: 0.95
 
   # Adaptive threshold filtering (replaces flat min_score)
   adaptive_threshold: true
