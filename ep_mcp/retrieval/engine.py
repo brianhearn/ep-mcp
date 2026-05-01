@@ -397,6 +397,12 @@ class RetrievalEngine:
         # Step 8: Cross-encoder rerank (second-pass precision layer)
         if self._reranker is not None:
             merged = self._reranker.rerank(request.query, merged)
+        _t_rerank = time.perf_counter()
+        logger.info(
+            "[TIMING] stage=reranker elapsed_ms=%.1f total_ms=%.1f results=%d",
+            (_t_rerank - _t) * 1000, (_t_rerank - _t_start) * 1000, len(merged),
+        )
+        _t = _t_rerank
 
         # Slice to max_results BEFORE requires-expansion so required atoms
         # attach to the files that actually survive the top-K cutoff.
@@ -412,7 +418,7 @@ class RetrievalEngine:
 
         _t_end = time.perf_counter()
         logger.info(
-            "[TIMING] stage=requires_expansion+total elapsed_ms=%.1f total_ms=%.1f results=%d",
+            "[TIMING] stage=requires_expansion elapsed_ms=%.1f total_ms=%.1f results=%d",
             (_t_end - _t) * 1000, (_t_end - _t_start) * 1000, len(final_top_k),
         )
 
