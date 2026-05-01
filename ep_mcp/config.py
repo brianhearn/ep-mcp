@@ -68,6 +68,8 @@ class RerankerConfig(BaseModel):
     enabled: bool = False
     model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     candidate_pool_size: int = 20  # how many candidates to rerank before final slice
+    max_chars: int = 512  # truncate document text before cross-encoder scoring
+    batch_size: int = 32  # CrossEncoder predict batch size
 
 class RetrievalConfig(BaseModel):
     """Retrieval pipeline configuration."""

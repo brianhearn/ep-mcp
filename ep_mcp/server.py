@@ -265,6 +265,8 @@ async def init_pack(
         model_name=reranker_cfg.model,
         candidate_pool_size=reranker_cfg.candidate_pool_size,
         enabled=reranker_cfg.enabled,
+        max_chars=reranker_cfg.max_chars,
+        batch_size=reranker_cfg.batch_size,
     )
     engine = RetrievalEngine(pack, store, provider, retrieval_cfg, graph_lookup, reranker=reranker)
     mcp = create_pack_mcp(slug, pack, engine, graph_lookup, query_log_path=config.query_log_path)

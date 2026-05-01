@@ -47,10 +47,14 @@ class Reranker:
         model_name: str = _DEFAULT_MODEL,
         candidate_pool_size: int = 20,
         enabled: bool = True,
+        max_chars: int = 512,
+        batch_size: int = 32,
     ):
         self._model_name = model_name
         self._candidate_pool_size = candidate_pool_size
         self._enabled = enabled
+        self._max_chars = max_chars
+        self._batch_size = batch_size
         self._model = None  # lazy load
         self._load_failed = False
 
@@ -103,8 +107,12 @@ class Reranker:
         remainder = results[pool_size:]
 
         try:
-            pairs = [(query, r.text) for r in pool]
-            ce_scores = self._model.predict(pairs)
+            pairs = [(query, self._truncate_text(r.text)) for r in pool]
+            ce_scores = self._model.predict(
+                pairs,
+                batch_size=self._batch_size,
+                show_progress_bar=False,
+            )
 
             # Zip candidates with their cross-encoder scores and re-sort
             scored = sorted(
@@ -123,3 +131,19 @@ class Reranker:
         except Exception as exc:
             logger.warning("Reranker: scoring failed (%s) — returning original order", exc)
             return results
+
+    def _truncate_text(self, text: str) -> str:
+        """Bound document length before cross-encoder scoring.
+
+        Cross-encoder cost scales with token count. The model's tokenizer caps
+        long inputs anyway, but passing whole ExpertPack chunks makes tokenization
+        and inference much slower. Keep the front matter/lead content where the
+        answer signal usually lives, and trim at a word boundary when possible.
+        """
+        if self._max_chars <= 0 or len(text) <= self._max_chars:
+            return text
+        clipped = text[: self._max_chars]
+        boundary = max(clipped.rfind("\n"), clipped.rfind(". "), clipped.rfind(" "))
+        if boundary >= max(120, int(self._max_chars * 0.6)):
+            clipped = clipped[: boundary + 1]
+        return clipped
