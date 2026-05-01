@@ -6,6 +6,8 @@ import json
 import logging
 import math
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 
@@ -134,7 +136,7 @@ def mmr_rerank(
     Uses MMR to select and order results for diversity, but preserves the
     original relevance scores in the output.  This prevents the MMR diversity
     penalty from collapsing scores when input relevance scores have low
-    variance (common for domain-specific packs where all chunks are
+    variance (common for ExpertPack-style packs where many chunks are
     semantically similar).
 
     Selection criterion per step:
@@ -142,16 +144,6 @@ def mmr_rerank(
 
     The chunk with the highest MMR is picked next, but its *output* score
     is the original ``Rel(d)`` — not the MMR value.
-
-    Args:
-        scored_chunks: [(chunk_id, relevance_score), ...] sorted by score desc
-        embeddings: {chunk_id: embedding_vector} for cosine similarity
-        lambda_param: Balance factor (1.0 = pure relevance, 0.0 = pure diversity)
-        k: Number of results to return
-
-    Returns:
-        Re-ranked [(chunk_id, original_relevance_score), ...] of length
-        min(k, len(scored_chunks)), ordered by MMR selection order.
     """
     if not scored_chunks:
         return []
@@ -160,38 +152,58 @@ def mmr_rerank(
         # No embeddings available or pure relevance — just truncate
         return scored_chunks[:k]
 
-    remaining = dict(scored_chunks)
+    # Keep only candidates with vectors; append any vectorless candidates after MMR.
+    candidate_ids: list[int] = []
+    relevance_scores: list[float] = []
+    vector_rows: list[list[float]] = []
+    vectorless: list[tuple[int, float]] = []
+    for cid, score in scored_chunks:
+        emb = embeddings.get(cid)
+        if emb is None:
+            vectorless.append((cid, score))
+            continue
+        candidate_ids.append(cid)
+        relevance_scores.append(score)
+        vector_rows.append(emb)
+
+    if not candidate_ids:
+        return scored_chunks[:k]
+
+    # Vectorized implementation. The old loop recomputed Python generator-based
+    # dot products and norms for every candidate/selected pair, which made MMR a
+    # multi-second bottleneck on 3072-d embeddings. Normalize once, then use BLAS
+    # matrix-vector products to update max similarity to selected candidates.
+    vectors = np.asarray(vector_rows, dtype=np.float32)
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    vectors = vectors / norms
+    relevance = np.asarray(relevance_scores, dtype=np.float32)
+    max_similarity = np.zeros(len(candidate_ids), dtype=np.float32)
+    remaining = np.ones(len(candidate_ids), dtype=bool)
+
     selected: list[tuple[int, float]] = []
-    selected_embeddings: list[tuple[int, list[float]]] = []  # for diversity calc
+    target_k = min(k, len(candidate_ids))
+    for _ in range(target_k):
+        mmr_scores = (lambda_param * relevance) - ((1.0 - lambda_param) * max_similarity)
+        mmr_scores[~remaining] = -np.inf
+        best_idx = int(np.argmax(mmr_scores))
+        if not remaining[best_idx]:
+            break
 
-    while remaining and len(selected) < k:
-        best_id = None
-        best_mmr = -float("inf")
+        cid = candidate_ids[best_idx]
+        selected.append((cid, relevance_scores[best_idx]))
+        remaining[best_idx] = False
 
-        for cid, relevance in remaining.items():
-            # Relevance component
-            rel_component = lambda_param * relevance
+        if len(selected) >= target_k:
+            break
 
-            # Diversity component: max similarity to any already-selected chunk
-            div_component = 0.0
-            if selected_embeddings and cid in embeddings:
-                cid_emb = embeddings[cid]
-                for _, sel_emb in selected_embeddings:
-                    sim = _cosine_similarity(cid_emb, sel_emb)
-                    div_component = max(div_component, sim)
+        similarities = vectors @ vectors[best_idx]
+        max_similarity = np.maximum(max_similarity, similarities)
 
-            mmr = rel_component - (1 - lambda_param) * div_component
-
-            if mmr > best_mmr:
-                best_mmr = mmr
-                best_id = cid
-
-        if best_id is not None:
-            # Emit original relevance score, not MMR score
-            selected.append((best_id, remaining[best_id]))
-            if best_id in embeddings:
-                selected_embeddings.append((best_id, embeddings[best_id]))
-            del remaining[best_id]
+    # Preserve previous behavior for rare vectorless candidates: they can still
+    # appear after vector-ranked selections if there is room.
+    if len(selected) < k and vectorless:
+        selected.extend(vectorless[: k - len(selected)])
 
     return selected
 
