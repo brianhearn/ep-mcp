@@ -48,15 +48,13 @@ pip install -e .[dev]
 
 ### Configuration
 
-Create `config.yaml`:
+Create `config.yaml` with at minimum:
 
 ```yaml
 server:
   host: "127.0.0.1"
   port: 8000
   log_level: "info"
-  # Optional: structured query log (one JSONL record per search call)
-  # query_log_path: "/var/log/ep-mcp-queries.jsonl"
 
 packs:
   - slug: "my-pack"
@@ -65,72 +63,11 @@ packs:
       - "your-secret-key-here"
 
 embedding:
-  provider: "gemini"                 # "gemini" (default) or "azure-openai"
-  model: "gemini-embedding-001"       # see provider notes below
-  # azure_endpoint: null             # required for azure-openai (or AZURE_OPENAI_ENDPOINT env)
-  # azure_api_key: null              # required for azure-openai (or AZURE_OPENAI_API_KEY env)
-  # azure_api_version: "2024-10-21"
-  # azure_deployment: null           # defaults to model name
-
-retrieval:
-  vector_weight: 0.7
-  text_weight: 0.3
-  candidate_multiplier: 8
-  mmr_enabled: true
-  mmr_lambda: 0.7
-  min_score: 0.35
-  default_max_results: 10
-  type_match_boost: 0.05
-  tag_match_boost: 0.03
-  always_tier_boost: 0.02
-  graph_expansion_enabled: false
-  graph_expansion_depth: 1
-  graph_expansion_discount: 0.85
-  graph_expansion_min_score: 0.20
-  graph_expansion_confidence_threshold: 0.38
-  graph_expansion_structural_bonus: 1.0
-
-  # Adaptive + length + intent:
-  adaptive_threshold: true
-  activation_floor: 0.15
-  score_ratio: 0.55
-  absolute_floor: 0.20
-  length_penalty_threshold: 80
-  length_penalty_factor: 0.15
-  intent_routing_enabled: true
-  graph_expansion_deep: false
-  graph_expansion_deep_max_bonus: 5
-
-  # Schema v4.1 `requires:` expansion (enabled by default):
-  requires_expansion_enabled: true
-  requires_expansion_max_depth: 2
-  requires_expansion_max_atoms: 3
-  requires_expansion_token_budget: 3500
-  requires_expansion_score: 0.30
+  provider: "gemini"           # "gemini" (default) or "azure-openai"
+  model: "gemini-embedding-001"
 ```
 
-**Note:** All `retrieval:` fields are optional — defaults shown above. See [ARCHITECTURE.md §5](ARCHITECTURE.md) for the full 8-step pipeline.
-
-#### Azure OpenAI embeddings
-
-To use Azure OpenAI instead of Gemini (useful for all-Azure deployments):
-
-```yaml
-embedding:
-  provider: "azure-openai"
-  model: "text-embedding-3-large"     # 3072d — same dimension as Gemini default
-  # model: "text-embedding-3-small"  # 1536d — lighter/cheaper alternative
-  azure_endpoint: "https://<your-resource>.openai.azure.com/"
-  azure_api_version: "2024-10-21"
-  # azure_deployment: "my-deployment" # defaults to model name if omitted
-  # output_dimensionality: 1536       # optional MRL shortening (3-large only)
-```
-
-Set `AZURE_OPENAI_API_KEY` in the environment (or set `azure_api_key:` in config).
-
-> **Important:** embedding dimensions must match at index time. If you change provider
-> on an existing pack, delete the index directory (`rm -rf <pack>/.ep-mcp/`) before
-> restarting so the server rebuilds with the new vectors.
+For the full configuration reference — embedding providers, retrieval tuning (`mmr_lambda`, `min_score`, `default_max_results`, graph expansion, reranker, `requires:` expansion, etc.), production systemd setup, and deployment gotchas — see **[DEPLOYMENT.md](DEPLOYMENT.md)**.
 
 ### Running
 

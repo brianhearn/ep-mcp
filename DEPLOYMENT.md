@@ -111,16 +111,18 @@ See [ARCHITECTURE.md §5](ARCHITECTURE.md#5-retrieval-engine) for full pipeline 
 
 ### Reranker (optional second-pass precision layer)
 
-Adds a cross-encoder re-ranking pass after hybrid fusion. Disabled by default (requires `pip install sentence-transformers`).
+Adds a cross-encoder re-ranking pass after hybrid fusion. Requires `pip install sentence-transformers`. **Recommended: enable in production** — adds ~70–300ms warm latency but measurably improves precision.
 
 ```yaml
 reranker:
-  enabled: false
+  enabled: true
   model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
   candidate_pool_size: 20  # candidates to rerank before slicing to max_results
   max_chars: 512           # truncate document text before cross-encoder scoring
   batch_size: 32
 ```
+
+> **Note:** `candidate_pool_size` sets how many candidates the cross-encoder sees. For best results, ensure the retrieval `n` requested by the client (or `default_max_results`) is ≤ `candidate_pool_size`. If `n > candidate_pool_size`, the reranker only sees the first `n` results and the pool size has no effect.
 
 ### Pack-level index directory (`index_dir`)
 
