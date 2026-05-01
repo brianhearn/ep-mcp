@@ -119,18 +119,35 @@ See [ARCHITECTURE.md §5](ARCHITECTURE.md#5-retrieval-engine) for full pipeline 
 
 ### Reranker (optional second-pass precision layer)
 
-Adds a cross-encoder re-ranking pass after hybrid fusion. Requires `pip install sentence-transformers`. **Recommended: enable in production** — adds ~70–300ms warm latency but measurably improves precision.
+Adds a cross-encoder re-ranking pass after hybrid fusion. Requires `pip install sentence-transformers`. Treat this as **pack-dependent**, not a universal production default.
+
+For domain-specific operational packs — e.g. product docs, technical procedures, APIs, support knowledge, or other content whose terminology and relevance signals are unlikely to be well represented in the cross-encoder's training data — keep reranking **OFF** unless an eval proves otherwise. These packs may still be high-EK, but the EK lives in specialized concepts and file relationships that generic rerankers often do not understand. In that case, the tuned hybrid retrieval, graph expansion, MMR, and `requires:` expansion are usually the stronger signal.
+
+For person/story-style packs, narrative archives, bios, correspondence, essays, and other natural-language content closer to common web/document training distributions, reranking may be useful. Enable it only after measuring both answer quality and latency on that pack's eval set.
+
+Recommended default for domain packs:
+
+```yaml
+reranker:
+  enabled: false
+  model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+  candidate_pool_size: 20  # candidates to rerank before slicing to max_results when enabled
+  max_chars: 512           # truncate document text before cross-encoder scoring
+  batch_size: 32
+```
+
+Possible setting for person/story packs after eval validation:
 
 ```yaml
 reranker:
   enabled: true
   model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
-  candidate_pool_size: 20  # candidates to rerank before slicing to max_results
-  max_chars: 512           # truncate document text before cross-encoder scoring
+  candidate_pool_size: 10  # start smaller; increase only if eval quality improves enough to justify latency
+  max_chars: 512
   batch_size: 32
 ```
 
-> **Note:** `candidate_pool_size` sets how many candidates the cross-encoder sees. For best results, ensure the retrieval `n` requested by the client (or `default_max_results`) is ≤ `candidate_pool_size`. If `n > candidate_pool_size`, the reranker only sees the first `n` results and the pool size has no effect.
+> **Note:** `candidate_pool_size` sets how many candidates the cross-encoder sees. For best results when enabled, ensure the retrieval `n` requested by the client (or `default_max_results`) is ≤ `candidate_pool_size`. If `n > candidate_pool_size`, candidates beyond the pool are not reranked. Larger pools increase latency roughly with the number of candidates scored.
 
 ### Pack-level index directory (`index_dir`)
 
