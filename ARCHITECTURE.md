@@ -656,6 +656,21 @@ Unresolvable entries are logged as warnings (`requires_expansion | unresolved re
 **Production verification.** On the ezt-designer pack live at expertpack.ai/mcp, requires-expansion has been observed firing correctly for overview→detail relationships on live queries (e.g. `routing-directions` overview at rank 1 pulling `routing-editing` detail as a [REQUIRES] entry at rank 9). The mechanism moved the pack's retrieval benchmark from 82.9% source hit rate with 1 MISS to 87.8% with 0 MISSes across 22 eval questions; full results in the pack's `eval/results/v41-retrieval-*.md`.
 
 
+
+### 5.9 Reconstruct Mode
+
+Search normally returns frontmatter-stripped text because that is the cleanest payload for agent reasoning and embedding quality. When a caller needs auditability, `SearchRequest.reconstruct=true` enriches the same ranked results with the original markdown span and a structured provenance block.
+
+Reconstruct mode is deliberately post-retrieval: it does not affect vector/BM25 scoring, MMR, graph expansion, `requires:` expansion, or result ordering. It only adds verification payloads after the final result list is assembled.
+
+Returned enrichment fields:
+
+- `original_span` — source markdown span used for verification. Whole-file chunks return the raw markdown file, including frontmatter; split chunks return the matched section when possible.
+- `byte_offset` — UTF-8 byte offset of the span in the raw markdown file.
+- `provenance_block` — `id`, `source_file`, `chunk_index`, `content_hash`, `verified_at`, `verified_by`, `byte_offset`, `span_sha256`, and `file_sha256`.
+
+This is the runtime counterpart to ExpertPack's provenance-first schema: agents can cite a result, verify the span hash, and show the exact source text behind an answer without changing the retrieval pipeline.
+
 ## 6. Embedding Provider Interface
 
 ### 6.1 Abstract Interface

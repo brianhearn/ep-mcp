@@ -74,7 +74,7 @@ The result: the agent enters the conversation already expert. It knows the domai
 
 - **Expertise injection, not just retrieval** — the agent becomes expert at registration through instructions, resources, and prompts. RAG handles the long tail; the agent doesn't start from zero on every query.
 - **Schema-validated knowledge** — not a pile of scraped docs. Typed files with known structure, relationships, and freshness guarantees.
-- **Provenance** — every chunk carries `id`, `content_hash`, `verified_at`, `verified_by`. Agents can cite sources properly and consumers can verify claims.
+- **Provenance and reconstruction** — every chunk carries `id`, `content_hash`, `verified_at`, `verified_by`, and callers can opt into reconstruct mode to retrieve the original markdown span plus verification hashes. Agents can cite sources properly and consumers can verify claims.
 - **Graph-aware retrieval** — EP's `_graph.yaml` adjacency layer means related content follows wikilinks and structural relationships, not just embedding similarity.
 - **EP-native chunking** — files are authored as retrieval units (schema-as-chunker). No lossy post-hoc splitting that breaks context.
 - **Pack portability** — same server, different pack, different domain. Swap `my-pack` for `blender-3d` and you have a different expertise service running.
