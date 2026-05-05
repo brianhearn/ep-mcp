@@ -416,6 +416,9 @@ class RetrievalEngine:
             if requires_bonus:
                 final_top_k = final_top_k + requires_bonus
 
+        if request.reconstruct:
+            self._enrich_with_reconstruct(final_top_k)
+
         _t_end = time.perf_counter()
         logger.info(
             "[TIMING] stage=requires_expansion elapsed_ms=%.1f total_ms=%.1f results=%d",
@@ -521,8 +524,57 @@ class RetrievalEngine:
                 graph_expanded=False,
             ))
 
+        if request.reconstruct:
+            self._enrich_with_reconstruct(results)
+
         logger.info("[BM25_FALLBACK] returning %d results", len(results))
         return results
+
+    def _enrich_with_reconstruct(self, results: list[SearchResult]) -> None:
+        """Populate original markdown spans and provenance blocks in-place.
+
+        EP indexing strips frontmatter before embedding, but the loaded pack keeps
+        raw markdown in memory. Reconstruct mode lets callers verify exactly what
+        source span produced a result without changing retrieval/scoring.
+        """
+        for result in results:
+            pack_file = self.pack.files.get(result.source_file)
+            if pack_file is None:
+                continue
+
+            raw = pack_file.raw_content or pack_file.content
+            span = pack_file.content or result.text
+
+            # For whole-file chunks, return the full raw markdown so frontmatter
+            # provenance is visible. For split chunks, locate the stripped chunk
+            # text in the raw file and return that exact section when possible.
+            if result.chunk_index == 0:
+                original_span = raw
+                char_offset = 0
+            else:
+                original_span = result.text
+                char_offset = raw.find(result.text)
+                if char_offset < 0:
+                    # Split chunks may be prefixed with the file title. Fall back
+                    # to the loaded body span when exact matching fails.
+                    body_offset = raw.find(span)
+                    char_offset = body_offset if body_offset >= 0 else 0
+                    original_span = span if body_offset >= 0 else result.text
+
+            byte_offset = len(raw[:char_offset].encode("utf-8")) if char_offset >= 0 else None
+            result.original_span = original_span
+            result.byte_offset = byte_offset
+            result.provenance_block = {
+                "id": result.id,
+                "source_file": result.source_file,
+                "chunk_index": result.chunk_index,
+                "content_hash": result.content_hash,
+                "verified_at": result.verified_at,
+                "verified_by": pack_file.provenance.verified_by,
+                "byte_offset": byte_offset,
+                "span_sha256": _sha256(original_span),
+                "file_sha256": _sha256(raw),
+            }
 
     def _apply_graph_expansion(
         self,
@@ -1221,6 +1273,13 @@ def _log_top_chunks_scored(
         chunk = chunks.get(cid, {})
         fp = chunk.get("file_path", "?")
         logger.info("  %2d. score=%.4f  %s  (chunk_id=%d)", i + 1, score, fp, cid)
+
+
+def _sha256(text: str) -> str:
+    """Return a sha256: digest for provenance blocks."""
+    import hashlib
+
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _parse_tags(tags_json: str) -> list[str]:

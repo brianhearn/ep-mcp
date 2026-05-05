@@ -31,6 +31,13 @@ class SearchRequest(BaseModel):
             "embedding provider."
         ),
     )
+    reconstruct: bool = Field(
+        default=False,
+        description=(
+            "When true, enrich results with original markdown spans and a "
+            "structured provenance block for verification."
+        ),
+    )
 
 
 class SearchResult(BaseModel):
@@ -48,3 +55,15 @@ class SearchResult(BaseModel):
     title: str | None = Field(None, description="Content title")
     graph_expanded: bool = Field(False, description="Whether this result was added via post-top-K graph expansion")
     requires_expanded: bool = Field(False, description="Whether this result was added via post-top-K requires: expansion (atomic-conceptual dependencies)")
+    original_span: str | None = Field(
+        None,
+        description="Original markdown span for verification/reconstruction",
+    )
+    provenance_block: dict | None = Field(
+        None,
+        description="Structured provenance metadata for the returned span",
+    )
+    byte_offset: int | None = Field(
+        None,
+        description="UTF-8 byte offset of original_span within the raw markdown file",
+    )

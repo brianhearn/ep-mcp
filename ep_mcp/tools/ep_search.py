@@ -21,6 +21,7 @@ async def ep_search(
     tags: list[str] | None = None,
     max_results: int = 10,
     query_log_path: str | None = None,
+    reconstruct: bool = False,
 ) -> list[dict]:
     """Search the ExpertPack for relevant domain expertise.
 
@@ -30,6 +31,7 @@ async def ep_search(
         type: Filter by content type (concept, workflow, reference, etc.)
         tags: Filter by content tags (results match at least one)
         max_results: Maximum results to return (1-50, default 10)
+        reconstruct: Include original markdown spans and provenance blocks
 
     Returns:
         List of result dicts matching the MCP output schema
@@ -43,6 +45,7 @@ async def ep_search(
         type=type,
         tags=tags,
         max_results=min(max(max_results, 1), 50),
+        reconstruct=reconstruct,
     )
 
     try:
@@ -101,6 +104,12 @@ async def ep_search(
             "type": r.type,
             "tags": r.tags,
             "title": r.title,
+            "chunk_index": r.chunk_index,
+            "graph_expanded": r.graph_expanded,
+            "requires_expanded": r.requires_expanded,
+            "original_span": r.original_span,
+            "provenance_block": r.provenance_block,
+            "byte_offset": r.byte_offset,
         }
         for r in results
     ]

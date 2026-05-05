@@ -114,6 +114,7 @@ def create_pack_mcp(
         type: str | None = None,
         tags: list[str] | None = None,
         max_results: int = 10,
+        reconstruct: bool = False,
     ) -> str:
         """Search the ExpertPack for relevant domain expertise.
 
@@ -123,6 +124,8 @@ def create_pack_mcp(
                   troubleshooting, faq, specification, etc.)
             tags: Filter by content tags. Results must match at least one.
             max_results: Maximum results to return (1-50, default 10).
+            reconstruct: Include original markdown spans and provenance blocks
+                for verification/reconstruction (default false).
 
         Returns:
             JSON array of ranked results with provenance metadata.
@@ -131,6 +134,7 @@ def create_pack_mcp(
             results = await ep_search(
                 engine, query, type, tags, max_results,
                 query_log_path=query_log_path,
+                reconstruct=reconstruct,
             )
             return json.dumps(results, indent=2)
         except Exception as e:
@@ -369,6 +373,7 @@ def build_app(
         type_filter = request.query_params.get("type", None)
         tags_raw = request.query_params.get("tags", None)
         tags = [t.strip() for t in tags_raw.split(",") if t.strip()] if tags_raw else None
+        reconstruct = request.query_params.get("reconstruct", "").lower() in {"1", "true", "yes"}
 
         # Optional tuning overrides
         conf_raw = request.query_params.get("graph_expansion_confidence_threshold", None)
@@ -392,7 +397,13 @@ def build_app(
             engine = pack_instances[slug].engine
             from .retrieval.models import SearchRequest
             import time as _time
-            search_req = SearchRequest(query=q, type=type_filter, tags=tags, max_results=n)
+            search_req = SearchRequest(
+                query=q,
+                type=type_filter,
+                tags=tags,
+                max_results=n,
+                reconstruct=reconstruct,
+            )
             _t0 = _time.monotonic()
             raw_results = await engine.search(
                 search_req,
@@ -409,19 +420,7 @@ def build_app(
             return JSONResponse({
                 "query": q,
                 "pack": slug,
-                "results": [
-                    {
-                        "source_file": r.source_file,
-                        "title": r.title,
-                        "text": r.text,
-                        "score": round(r.score, 4),
-                        "type": r.type,
-                        "tags": r.tags,
-                        "graph_expanded": r.graph_expanded,
-                        "requires_expanded": r.requires_expanded,
-                    }
-                    for r in raw_results
-                ],
+                "results": [_result_to_http_dict(r) for r in raw_results],
             })
         except Exception as exc:
             logger.exception("search endpoint error | pack=%s query=%r", slug, q)
@@ -445,6 +444,7 @@ def build_app(
               "type": null,
               "tags": null,
               "vector": [float, ...],          // optional
+              "reconstruct": false,            // optional
               "graph_expansion_confidence_threshold": 0.55,  // optional
               "graph_expansion_min_score": 0.45              // optional
             }
@@ -472,6 +472,7 @@ def build_app(
         min_raw = body.get("graph_expansion_min_score")
         conf_override = float(conf_raw) if conf_raw is not None else None
         min_override = float(min_raw) if min_raw is not None else None
+        reconstruct = bool(body.get("reconstruct", False))
 
         vector = body.get("vector")
         if vector is not None:
@@ -521,6 +522,7 @@ def build_app(
                 tags=tags,
                 max_results=n,
                 vector=vector,
+                reconstruct=reconstruct,
             )
             _t0 = _time.monotonic()
             raw_results = await engine.search(
@@ -539,23 +541,31 @@ def build_app(
                 "query": q,
                 "pack": slug,
                 "vector_supplied": vector is not None,
-                "results": [
-                    {
-                        "source_file": r.source_file,
-                        "title": r.title,
-                        "text": r.text,
-                        "score": round(r.score, 4),
-                        "type": r.type,
-                        "tags": r.tags,
-                        "graph_expanded": r.graph_expanded,
-                        "requires_expanded": r.requires_expanded,
-                    }
-                    for r in raw_results
-                ],
+                "results": [_result_to_http_dict(r) for r in raw_results],
             })
         except Exception as exc:
             logger.exception("search(POST) endpoint error | pack=%s query=%r", slug, q)
             return JSONResponse({"error": str(exc)}, status_code=500)
+
+    def _result_to_http_dict(result) -> dict:
+        """Serialize SearchResult for lightweight HTTP endpoints."""
+        return {
+            "source_file": result.source_file,
+            "title": result.title,
+            "text": result.text,
+            "score": round(result.score, 4),
+            "type": result.type,
+            "tags": result.tags,
+            "graph_expanded": result.graph_expanded,
+            "requires_expanded": result.requires_expanded,
+            "id": result.id,
+            "content_hash": result.content_hash,
+            "verified_at": result.verified_at,
+            "chunk_index": result.chunk_index,
+            "original_span": result.original_span,
+            "provenance_block": result.provenance_block,
+            "byte_offset": result.byte_offset,
+        }
 
     routes = [
         Route("/health", health),
