@@ -11,6 +11,20 @@ from ..retrieval.graph_helpers import GraphLookup, GraphNodeInfo
 logger = logging.getLogger(__name__)
 
 
+def _node_to_dict(node_id: str, info: GraphNodeInfo | None, file_path: str | None) -> dict:
+    """Serialize graph node metadata for tool output."""
+    return {
+        "id": node_id,
+        "file": file_path,
+        "title": info.title if info else None,
+        "type": info.type if info else None,
+        "kind": info.kind if info else None,
+        "aliases": info.aliases if info else [],
+        "status": info.status if info else None,
+        "is_file_backed": bool(file_path),
+    }
+
+
 def ep_graph_traverse(
     pack: Pack,
     graph_lookup: GraphLookup | None,
@@ -47,21 +61,20 @@ def ep_graph_traverse(
 
     graph = pack.graph
 
-    # Resolve start node
+    # Resolve start node. Accept either a pack-relative file path or a raw
+    # graph node id (needed for ontology_entity nodes, which have no file).
     start_node_id = graph_lookup.file_to_node_id.get(file_path)
+    if start_node_id is None and file_path in graph_lookup.node_info:
+        start_node_id = file_path
     if start_node_id is None:
         return {
-            "start_node": {"file": file_path, "title": None, "type": None},
+            "start_node": {"id": file_path, "file": file_path, "title": None, "type": None},
             "connected": [],
             "total_edges_traversed": 0,
         }
 
     start_info = graph_lookup.node_info.get(start_node_id)
-    start_node_dict = {
-        "file": file_path,
-        "title": start_info.title if start_info else None,
-        "type": start_info.type if start_info else None,
-    }
+    start_node_dict = _node_to_dict(start_node_id, start_info, file_path if start_info is None else start_info.file)
 
     # BFS traversal
     visited: set[str] = {start_node_id}
@@ -98,17 +111,17 @@ def ep_graph_traverse(
 
             visited.add(neighbor_id)
 
-            # Resolve neighbor info
+            # Resolve neighbor info. Ontology/entity nodes may have no source file;
+            # keep their node id and metadata instead of dropping them.
             neighbor_info = graph_lookup.node_info.get(neighbor_id)
-            neighbor_file = graph_lookup.node_id_to_file.get(neighbor_id)
-
-            connected.append({
-                "file": neighbor_file,
-                "title": neighbor_info.title if neighbor_info else None,
-                "type": neighbor_info.type if neighbor_info else None,
-                "edge_kind": edge.kind,
-                "depth": current_depth + 1,
-            })
+            node_dict = _node_to_dict(
+                neighbor_id,
+                neighbor_info,
+                graph_lookup.node_id_to_file.get(neighbor_id),
+            )
+            node_dict["edge_kind"] = edge.kind
+            node_dict["depth"] = current_depth + 1
+            connected.append(node_dict)
 
             queue.append((neighbor_id, current_depth + 1))
 

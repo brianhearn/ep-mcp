@@ -895,6 +895,13 @@ All EP MCP tools are annotated per MCP spec:
 
 ---
 
+
+### Ontology Entity Nodes
+
+`_graph.yaml` may include accepted ontology nodes produced by ExpertPack graph export. These nodes have `type: ontology_entity` and usually do not have a backing Markdown `file`. EP MCP preserves their metadata in `GraphLookup` (`id`, `title`, `type`, `kind`, `aliases`, `status`) and `ep_graph_traverse` can start from or traverse through them. Tool output marks whether each node is file-backed via `is_file_backed`.
+
+Retrieval expansion that needs chunk content still uses only file-backed neighbors; ontology nodes enrich traversal and graph context without forcing fake source files.
+
 ## 8. MCP Resources
 
 ### 8.1 What Gets Exposed as Resources

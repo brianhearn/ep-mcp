@@ -21,6 +21,7 @@ NODES_RAW = [
     {"id": "pack/workflows/wf-alpha", "title": "Alpha Workflow", "type": "workflow", "file": "workflows/wf-alpha.md"},
     {"id": "pack/reference/ref-config", "title": "Config Reference", "type": "reference", "file": "reference/ref-config.md"},
     {"id": "pack/concepts/gamma", "title": "Gamma Concept", "type": "concept", "file": "concepts/gamma.md"},
+    {"id": "entity:alpha", "title": "Alpha Entity", "type": "ontology_entity", "kind": "term", "aliases": ["Alpha"], "status": "accepted"},
 ]
 
 EDGES = [
@@ -28,6 +29,7 @@ EDGES = [
     GraphEdge(source="pack/concepts/alpha", target="pack/reference/ref-config", kind="related"),
     GraphEdge(source="pack/workflows/wf-alpha", target="pack/concepts/beta", kind="wikilink"),
     GraphEdge(source="pack/concepts/beta", target="pack/concepts/gamma", kind="wikilink"),
+    GraphEdge(source="pack/concepts/alpha", target="entity:alpha", kind="entity_mention"),
 ]
 
 
@@ -68,14 +70,18 @@ class TestGraphTraverse:
             file_path="concepts/alpha.md", depth=1,
         )
 
+        assert result["start_node"]["id"] == "pack/concepts/alpha"
         assert result["start_node"]["file"] == "concepts/alpha.md"
         assert result["start_node"]["title"] == "Alpha Concept"
         assert result["start_node"]["type"] == "concept"
+        assert result["start_node"]["is_file_backed"] is True
 
         connected_files = {c["file"] for c in result["connected"]}
+        connected_ids = {c["id"] for c in result["connected"]}
         assert "workflows/wf-alpha.md" in connected_files
         assert "reference/ref-config.md" in connected_files
-        assert len(result["connected"]) == 2
+        assert "entity:alpha" in connected_ids
+        assert len(result["connected"]) == 3
 
         # All should be depth 1
         for c in result["connected"]:
@@ -141,6 +147,7 @@ class TestGraphTraverse:
             file_path="nonexistent/file.md", depth=1,
         )
 
+        assert result["start_node"]["id"] == "nonexistent/file.md"
         assert result["start_node"]["file"] == "nonexistent/file.md"
         assert result["start_node"]["title"] is None
         assert result["connected"] == []
@@ -174,6 +181,27 @@ class TestGraphTraverse:
         # Verify max depth is 3
         max_depth = max(c["depth"] for c in result_high["connected"])
         assert max_depth == 3
+
+    def test_ontology_entity_node_traversal(self):
+        """Ontology/entity nodes have no source file but should traverse cleanly."""
+        pack = _build_pack()
+        lookup = _build_lookup()
+
+        result = ep_graph_traverse(
+            pack=pack, graph_lookup=lookup,
+            file_path="entity:alpha", depth=1,
+        )
+
+        assert result["start_node"]["id"] == "entity:alpha"
+        assert result["start_node"]["file"] is None
+        assert result["start_node"]["type"] == "ontology_entity"
+        assert result["start_node"]["kind"] == "term"
+        assert result["start_node"]["aliases"] == ["Alpha"]
+        assert result["start_node"]["status"] == "accepted"
+        assert result["start_node"]["is_file_backed"] is False
+
+        connected_ids = {c["id"] for c in result["connected"]}
+        assert "pack/concepts/alpha" in connected_ids
 
     def test_no_graph_returns_empty(self):
         """When pack has no graph, should return empty connected list."""

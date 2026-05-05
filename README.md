@@ -24,7 +24,7 @@ An MCP server that turns any ExpertPack into a live, queryable knowledge service
 - **Frontmatter aware**: Strips metadata for embedding, extracts `type`, `tags`, `requires`, etc. for boosting/expansion/filtering
 - **Incremental indexing**: Content-hash based staleness detection — only re-embeds changed files
 - **Multi-pack support**: Path-based routing at `/packs/{slug}/mcp`
-- **Graph-aware retrieval**: optional post-retrieval expansion via `_graph.yaml` adjacency
+- **Graph-aware retrieval**: optional post-retrieval expansion via `_graph.yaml` adjacency, including accepted ontology/entity nodes when graph export provides them
 - **Tools**:
   - `ep_search` — primary hybrid retrieval tool
   - `ep_list_topics` — browse pack structure and available content types

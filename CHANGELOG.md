@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Ontology/entity graph traversal support** — graph lookup and `ep_graph_traverse` now handle non-file-backed graph nodes such as accepted ontology entities from ExpertPack `_graph.yaml` exports. Tool output includes node `id`, `kind`, `aliases`, `status`, and `is_file_backed`, so ontology nodes can participate in traversal without assuming every node maps to a Markdown file.
 - **Reconstruct mode for provenance verification** — `SearchRequest.reconstruct` adds opt-in enrichment for both MCP and HTTP search. When enabled, each `SearchResult` can include `original_span`, `byte_offset`, and a `provenance_block` containing source file, chunk index, content hash, verification metadata, and SHA-256 hashes for the returned span/file. Supported via MCP `ep_search_tool(reconstruct=True)`, `GET /search?...&reconstruct=true`, and POST `/search` with `"reconstruct": true`. Default remains off, so scoring, result ordering, payload size, and existing clients are unchanged.
 
 - **Reranker input bounds** — cross-encoder reranking now accepts `reranker.max_chars` (default `512`) and `reranker.batch_size` (default `32`). Document text is truncated before scoring and the progress bar is suppressed, keeping warm reranker latency bounded while preserving the original hybrid scores for reporting. In the Azure `ezt-designer` eval, `max_chars: 512` held accuracy at **40/42 source hits (95.2%), 20 PASS / 2 PART / 0 MISS** while reducing warm end-to-end latency from ~1.35s to ~0.42s.

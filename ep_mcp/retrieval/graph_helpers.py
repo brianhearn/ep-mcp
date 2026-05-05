@@ -21,6 +21,9 @@ class GraphNodeInfo:
     title: str | None = None
     type: str | None = None
     file: str | None = None
+    kind: str | None = None
+    aliases: list[str] = field(default_factory=list)
+    status: str | None = None
 
 
 @dataclass
@@ -79,6 +82,9 @@ class GraphLookup:
                 title=node.get("title"),
                 type=node.get("type"),
                 file=file_path,
+                kind=node.get("kind"),
+                aliases=[str(a) for a in (node.get("aliases") or [])],
+                status=node.get("status"),
             )
             lookup.node_info[node_id] = info
 
@@ -119,6 +125,9 @@ class GraphLookup:
                 title=node.get("title"),
                 type=node.get("type"),
                 file=file_path,
+                kind=node.get("kind"),
+                aliases=[str(a) for a in (node.get("aliases") or [])],
+                status=node.get("status"),
             )
             lookup.node_info[node_id] = info
 
