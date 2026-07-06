@@ -334,19 +334,9 @@ class RetrievalEngine:
             if not chunk:
                 continue
 
-            tags = _parse_tags(chunk.get("tags", "[]"))
-
-            result = SearchResult(
-                text=chunk["content"],
-                source_file=chunk["file_path"],
-                id=chunk.get("prov_id"),
-                content_hash=chunk.get("content_hash"),
-                verified_at=chunk.get("verified_at"),
-                score=round(score, 4),
-                type=chunk.get("type"),
-                tags=tags,
-                chunk_index=chunk.get("chunk_index", 0),
-                title=chunk.get("title"),
+            result = _search_result_from_chunk(
+                chunk,
+                score,
                 graph_expanded=False,
             )
             top_k_results.append(result)
@@ -509,18 +499,9 @@ class RetrievalEngine:
             chunk = chunks.get(chunk_id)
             if not chunk:
                 continue
-            tags = _parse_tags(chunk.get("tags", "[]"))
-            results.append(SearchResult(
-                text=chunk["content"],
-                source_file=chunk["file_path"],
-                id=chunk.get("prov_id"),
-                content_hash=chunk.get("content_hash"),
-                verified_at=chunk.get("verified_at"),
-                score=round(score, 4),
-                type=chunk.get("type"),
-                tags=tags,
-                chunk_index=chunk.get("chunk_index", 0),
-                title=chunk.get("title"),
+            results.append(_search_result_from_chunk(
+                chunk,
+                score,
                 graph_expanded=False,
             ))
 
@@ -531,50 +512,83 @@ class RetrievalEngine:
         return results
 
     def _enrich_with_reconstruct(self, results: list[SearchResult]) -> None:
-        """Populate original markdown spans and provenance blocks in-place.
+        """Populate RFC-003 fragment provenance envelopes in-place."""
+        from ..pack.sidecar import embeddable_span, extract_line_range_text, span_sha256
 
-        EP indexing strips frontmatter before embedding, but the loaded pack keeps
-        raw markdown in memory. Reconstruct mode lets callers verify exactly what
-        source span produced a result without changing retrieval/scoring.
-        """
         for result in results:
             pack_file = self.pack.files.get(result.source_file)
             if pack_file is None:
                 continue
 
             raw = pack_file.raw_content or pack_file.content
-            span = pack_file.content or result.text
+            line_range = result.line_range
+            section_slug = result.section_slug or "opening"
 
-            # For whole-file chunks, return the full raw markdown so frontmatter
-            # provenance is visible. For split chunks, locate the stripped chunk
-            # text in the raw file and return that exact section when possible.
-            if result.chunk_index == 0:
-                original_span = raw
-                char_offset = 0
+            if line_range:
+                raw_span = extract_line_range_text(raw, line_range)
+            elif result.chunk_index == 0:
+                raw_span = raw
+                line_range = (1, max(1, len(raw.splitlines())))
             else:
-                original_span = result.text
-                char_offset = raw.find(result.text)
-                if char_offset < 0:
-                    # Split chunks may be prefixed with the file title. Fall back
-                    # to the loaded body span when exact matching fails.
-                    body_offset = raw.find(span)
-                    char_offset = body_offset if body_offset >= 0 else 0
-                    original_span = span if body_offset >= 0 else result.text
+                raw_span, line_range = self._fallback_reconstruct_span(raw, result)
 
-            byte_offset = len(raw[:char_offset].encode("utf-8")) if char_offset >= 0 else None
-            result.original_span = original_span
+            embed_span = embeddable_span(raw_span)
+            current_span_hash = span_sha256(embed_span)
+            indexed_span_hash = result.span_hash
+            stale = bool(indexed_span_hash and indexed_span_hash != current_span_hash)
+
+            prov_id = result.id or pack_file.provenance.id or result.source_file
+            fragment_id = f"{prov_id}#{section_slug}:{current_span_hash[:12]}"
+
+            byte_start = _byte_offset_for_line(raw, line_range[0])
+            result.original_markdown = raw_span.rstrip("\n")
+            result.original_span = result.original_markdown
+            byte_end = byte_start + len(result.original_markdown.encode("utf-8"))
+            byte_offset = [byte_start, byte_end]
+
+            span_hash_prefixed = _sha256(embed_span)
+            file_hash = _normalize_file_hash(pack_file.provenance.content_hash or _sha256(raw))
+
+            result.excerpt = result.text
             result.byte_offset = byte_offset
+            result.line_range = line_range
+            result.fragment_id = fragment_id
+            result.stale = stale
+            result.content_hash = span_hash_prefixed
             result.provenance_block = {
-                "id": result.id,
+                "id": prov_id,
                 "source_file": result.source_file,
                 "chunk_index": result.chunk_index,
-                "content_hash": result.content_hash,
+                "fragment_id": fragment_id,
+                "line_range": list(line_range),
+                "content_hash": span_hash_prefixed,
                 "verified_at": result.verified_at,
                 "verified_by": pack_file.provenance.verified_by,
+                "confidence": result.confidence or pack_file.provenance.confidence,
                 "byte_offset": byte_offset,
-                "span_sha256": _sha256(original_span),
-                "file_sha256": _sha256(raw),
+                "span_sha256": span_hash_prefixed,
+                "file_sha256": file_hash,
+                "stale": stale,
             }
+
+    def _fallback_reconstruct_span(
+        self,
+        raw: str,
+        result: SearchResult,
+    ) -> tuple[str, tuple[int, int]]:
+        """Best-effort span recovery for legacy indexes without line metadata."""
+        span = result.text
+        char_offset = raw.find(result.text)
+        if char_offset < 0:
+            body_offset = raw.find(span)
+            char_offset = body_offset if body_offset >= 0 else 0
+            raw_span = span if body_offset >= 0 else result.text
+        else:
+            raw_span = result.text
+
+        line_start = raw.count("\n", 0, char_offset) + 1
+        line_end = line_start + max(0, raw_span.count("\n"))
+        return raw_span, (line_start, line_end)
 
     def _apply_graph_expansion(
         self,
@@ -823,19 +837,9 @@ class RetrievalEngine:
             )
             return None
 
-        tags = _parse_tags(primary_chunk.get("tags", "[]"))
-
-        return SearchResult(
-            text=primary_chunk["content"],
-            source_file=primary_chunk.get("file_path", file_path),
-            id=primary_chunk.get("prov_id"),
-            content_hash=primary_chunk.get("content_hash"),
-            verified_at=primary_chunk.get("verified_at"),
-            score=round(final_score, 4),
-            type=primary_chunk.get("type"),
-            tags=tags,
-            chunk_index=primary_chunk.get("chunk_index", 0),
-            title=primary_chunk.get("title"),
+        return _search_result_from_chunk(
+            primary_chunk,
+            final_score,
             graph_expanded=True,
         )
 
@@ -1040,8 +1044,6 @@ class RetrievalEngine:
             )
             return None
 
-        tags = _parse_tags(primary.get("tags", "[]"))
-
         # Token budget: prefer the loaded PackFile estimate if available; else word-based.
         pf = self.pack.files.get(file_path)
         if pf and pf.size_tokens:
@@ -1050,17 +1052,9 @@ class RetrievalEngine:
             content = primary.get("content", "") or ""
             tokens = max(1, int(len(content.split()) * 1.3))
 
-        result = SearchResult(
-            text=primary.get("content", ""),
-            source_file=primary.get("file_path", file_path),
-            id=primary.get("prov_id"),
-            content_hash=primary.get("content_hash"),
-            verified_at=primary.get("verified_at"),
-            score=round(float(expansion_score), 4),
-            type=primary.get("type"),
-            tags=tags,
-            chunk_index=primary.get("chunk_index", 0),
-            title=primary.get("title"),
+        result = _search_result_from_chunk(
+            primary,
+            float(expansion_score),
             graph_expanded=False,
             requires_expanded=True,
         )
@@ -1280,6 +1274,59 @@ def _sha256(text: str) -> str:
     import hashlib
 
     return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _normalize_file_hash(value: str) -> str:
+    """Ensure a file hash uses the sha256: prefix."""
+    if value.startswith("sha256:"):
+        return value
+    return f"sha256:{value}"
+
+
+def _byte_offset_for_line(raw: str, line_no: int, inclusive_end: bool = False) -> int:
+    """Return the UTF-8 byte offset at the start (or inclusive end) of a 1-indexed line."""
+    lines = raw.splitlines(keepends=True)
+    if line_no < 1:
+        return 0
+    if inclusive_end:
+        end_index = min(line_no, len(lines))
+        return len("".join(lines[:end_index]).encode("utf-8"))
+    start_index = min(line_no - 1, len(lines))
+    return len("".join(lines[:start_index]).encode("utf-8"))
+
+
+def _chunk_metadata_fields(chunk: dict) -> dict:
+    """Extract RFC-003/RFC-004 metadata stored on an indexed chunk row."""
+    line_start = chunk.get("line_start")
+    line_end = chunk.get("line_end")
+    line_range = None
+    if line_start is not None and line_end is not None:
+        line_range = (int(line_start), int(line_end))
+    return {
+        "line_range": line_range,
+        "section_slug": chunk.get("section_slug"),
+        "span_hash": chunk.get("span_hash"),
+        "confidence": chunk.get("confidence"),
+    }
+
+
+def _search_result_from_chunk(chunk: dict, score: float, **kwargs) -> SearchResult:
+    """Build a SearchResult from an indexed chunk row."""
+    tags = _parse_tags(chunk.get("tags", "[]"))
+    return SearchResult(
+        text=chunk["content"],
+        source_file=chunk["file_path"],
+        id=chunk.get("prov_id"),
+        content_hash=chunk.get("content_hash"),
+        verified_at=chunk.get("verified_at"),
+        score=round(score, 4),
+        type=chunk.get("type"),
+        tags=tags,
+        chunk_index=chunk.get("chunk_index", 0),
+        title=chunk.get("title"),
+        **_chunk_metadata_fields(chunk),
+        **kwargs,
+    )
 
 
 def _parse_tags(tags_json: str) -> list[str]:

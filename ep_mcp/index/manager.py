@@ -5,8 +5,12 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+from pathlib import Path
+
 from ..embeddings.base import EmbeddingProvider
+from ..pack.loader import _split_frontmatter
 from ..pack.models import Pack
+from ..pack.sidecar import load_sidecar, sidecar_path_for_md
 from .chunker import Chunk, chunk_file
 from .sqlite_store import SQLiteStore
 
@@ -121,8 +125,26 @@ class IndexManager:
             pack_file = self.pack.files[fp]
             # Delete existing chunks for this file (if updating)
             self.store.delete_file_chunks(fp)
-            # Chunk the file
-            chunks = chunk_file(fp, pack_file.content, pack_file.title)
+
+            sidecar = None
+            frontmatter, _ = _split_frontmatter(pack_file.raw_content)
+            sidecar_path = sidecar_path_for_md(
+                Path(self.pack.pack_dir),
+                fp,
+                frontmatter=frontmatter,
+            )
+            if sidecar_path is not None:
+                sidecar = load_sidecar(sidecar_path)
+                if sidecar is None:
+                    logger.warning("Failed to load chunk sidecar for %s", fp)
+
+            chunks = chunk_file(
+                fp,
+                pack_file.content,
+                pack_file.title,
+                raw_content=pack_file.raw_content,
+                sidecar=sidecar,
+            )
             all_chunks.extend(chunks)
 
         stats.total_chunks = self.store.chunk_count()  # existing
@@ -170,6 +192,9 @@ class IndexManager:
                 self.store.cache_embedding(chunk_hash, self.provider.model_name, embedding)
 
             pack_file = self.pack.files[chunk.file_path]
+            line_start = line_end = None
+            if chunk.line_range is not None:
+                line_start, line_end = chunk.line_range
             self.store.upsert_chunk(
                 file_path=chunk.file_path,
                 chunk_index=chunk.chunk_index,
@@ -184,6 +209,12 @@ class IndexManager:
                 verified_by=pack_file.provenance.verified_by,
                 token_count=chunk.token_count,
                 embedding=embedding,
+                line_start=line_start,
+                line_end=line_end,
+                section_slug=chunk.section_slug,
+                sidecar_chunk_id=chunk.sidecar_chunk_id,
+                span_hash=chunk.span_hash,
+                confidence=pack_file.provenance.confidence,
             )
 
         stats.total_chunks = self.store.chunk_count()

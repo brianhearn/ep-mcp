@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **RFC-004 chunk sidecar consumption** — the indexer now reads adjacent `<name>.chunks.yaml` sidecars (or a `chunks_sidecar:` frontmatter pointer) and uses their `line_range` / `chunk_order` boundaries instead of re-deriving splits at index time. Sidecar metadata (`section_slug`, `span_hash`, `sidecar_chunk_id`) is stored in SQLite for reconstruct mode.
+- **RFC-003 fragment provenance envelope** — `reconstruct=true` now returns `fragment_id`, `line_range`, `original_markdown`, span-level `content_hash`, `excerpt`, `stale`, and `[start, end]` `byte_offset` tuples matching the OpenClaw memory plugin contract. The legacy `original_span` / `provenance_block` fields remain for backward compatibility.
+- **Provenance confidence grade** — optional frontmatter `confidence` (`expert-verified` | `crawled` | `inferred`) is parsed at load time, stored on indexed chunks, and surfaced on search results / reconstruct envelopes.
+
 - **Ontology/entity graph traversal support** — graph lookup and `ep_graph_traverse` now handle non-file-backed graph nodes such as accepted ontology entities from ExpertPack `_graph.yaml` exports. Tool output includes node `id`, `kind`, `aliases`, `status`, and `is_file_backed`, so ontology nodes can participate in traversal without assuming every node maps to a Markdown file.
 - **Reconstruct mode for provenance verification** — `SearchRequest.reconstruct` adds opt-in enrichment for both MCP and HTTP search. When enabled, each `SearchResult` can include `original_span`, `byte_offset`, and a `provenance_block` containing source file, chunk index, content hash, verification metadata, and SHA-256 hashes for the returned span/file. Supported via MCP `ep_search_tool(reconstruct=True)`, `GET /search?...&reconstruct=true`, and POST `/search` with `"reconstruct": true`. Default remains off, so scoring, result ordering, payload size, and existing clients are unchanged.
 

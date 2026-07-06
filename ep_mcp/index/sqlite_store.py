@@ -145,6 +145,25 @@ class SQLiteStore:
 
         c.commit()
 
+        self._migrate_schema()
+
+    def _migrate_schema(self) -> None:
+        """Add newer provenance/chunk columns to existing databases."""
+        for column, typedef in (
+            ("line_start", "INTEGER"),
+            ("line_end", "INTEGER"),
+            ("section_slug", "TEXT"),
+            ("sidecar_chunk_id", "TEXT"),
+            ("span_hash", "TEXT"),
+            ("confidence", "TEXT"),
+        ):
+            try:
+                c = self.conn
+                c.execute(f"ALTER TABLE chunks ADD COLUMN {column} {typedef}")
+                c.commit()
+            except sqlite3.OperationalError:
+                pass
+
     # ── Chunk operations ──
 
     def upsert_chunk(
@@ -162,6 +181,12 @@ class SQLiteStore:
         verified_by: str | None,
         token_count: int,
         embedding: list[float] | None = None,
+        line_start: int | None = None,
+        line_end: int | None = None,
+        section_slug: str | None = None,
+        sidecar_chunk_id: str | None = None,
+        span_hash: str | None = None,
+        confidence: str | None = None,
     ) -> int:
         """Insert or update a chunk. Returns the chunk row id."""
         c = self.conn
@@ -179,10 +204,14 @@ class SQLiteStore:
                 """UPDATE chunks SET
                     content = ?, title = ?, type = ?, tags = ?,
                     pack_slug = ?, prov_id = ?, content_hash = ?,
-                    verified_at = ?, verified_by = ?, token_count = ?
+                    verified_at = ?, verified_by = ?, token_count = ?,
+                    line_start = ?, line_end = ?, section_slug = ?,
+                    sidecar_chunk_id = ?, span_hash = ?, confidence = ?
                 WHERE id = ?""",
                 (content, title, type_, tags_json, pack_slug, prov_id,
-                 content_hash, verified_at, verified_by, token_count, chunk_id),
+                 content_hash, verified_at, verified_by, token_count,
+                 line_start, line_end, section_slug, sidecar_chunk_id,
+                 span_hash, confidence, chunk_id),
             )
             # Update vector
             if embedding:
@@ -195,10 +224,14 @@ class SQLiteStore:
             cursor = c.execute(
                 """INSERT INTO chunks
                     (file_path, chunk_index, content, title, type, tags,
-                     pack_slug, prov_id, content_hash, verified_at, verified_by, token_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                     pack_slug, prov_id, content_hash, verified_at, verified_by,
+                     token_count, line_start, line_end, section_slug,
+                     sidecar_chunk_id, span_hash, confidence)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (file_path, chunk_index, content, title, type_, tags_json,
-                 pack_slug, prov_id, content_hash, verified_at, verified_by, token_count),
+                 pack_slug, prov_id, content_hash, verified_at, verified_by,
+                 token_count, line_start, line_end, section_slug,
+                 sidecar_chunk_id, span_hash, confidence),
             )
             chunk_id = cursor.lastrowid
             # Insert vector

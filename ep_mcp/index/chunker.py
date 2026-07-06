@@ -1,10 +1,17 @@
-"""EP-native chunking: file = chunk, with oversized splitting."""
+"""EP-native chunking: file = chunk, with oversized splitting and RFC-004 sidecars."""
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
 
+from ..pack.sidecar import (
+    ChunkSidecar,
+    embeddable_span,
+    extract_line_range_text,
+    section_slug_from_chunk,
+    span_sha256,
+)
 
 @dataclass
 class Chunk:
@@ -15,6 +22,10 @@ class Chunk:
     content: str
     title: str | None
     token_count: int
+    line_range: tuple[int, int] | None = None
+    section_slug: str | None = None
+    sidecar_chunk_id: str | None = None
+    span_hash: str | None = None
 
 
 # Default token threshold for splitting (from ARCHITECTURE.md §4.2)
@@ -29,21 +40,29 @@ def chunk_file(
     content: str,
     title: str | None,
     max_tokens: int = DEFAULT_MAX_TOKENS,
+    raw_content: str | None = None,
+    sidecar: ChunkSidecar | None = None,
 ) -> list[Chunk]:
     """Chunk a single file for indexing.
 
     EP schema-as-chunker: most files pass through as a single chunk.
-    Oversized files (>max_tokens) are split at heading boundaries.
+    When an RFC-004 sidecar is present, its boundaries are authoritative.
+    Otherwise oversized files (>max_tokens) are split at heading boundaries.
 
     Args:
         file_path: Relative path within pack
         content: Markdown content (frontmatter already stripped)
         title: File title for context prefix on splits
         max_tokens: Token threshold for splitting
+        raw_content: Full markdown with frontmatter (needed for sidecar line ranges)
+        sidecar: Optional RFC-004 chunk metadata sidecar
 
     Returns:
         List of Chunk objects (usually just one)
     """
+    if sidecar is not None:
+        return _chunk_from_sidecar(file_path, raw_content or content, title, sidecar)
+
     tokens = estimate_tokens(content)
 
     # Most EP files are under the threshold — pass through intact
@@ -55,6 +74,9 @@ def chunk_file(
                 content=content,
                 title=title,
                 token_count=tokens,
+                line_range=(1, max(1, len((raw_content or content).splitlines()))),
+                section_slug="opening",
+                span_hash=span_sha256(content),
             )
         ]
 
@@ -70,6 +92,9 @@ def chunk_file(
                 content=content,
                 title=title,
                 token_count=tokens,
+                line_range=(1, max(1, len((raw_content or content).splitlines()))),
+                section_slug="opening",
+                span_hash=span_sha256(content),
             )
         ]
 
@@ -84,6 +109,7 @@ def chunk_file(
         if i > 0 and title:
             section_content = f"# {title}\n\n{section_content}"
 
+        section_slug = _section_slug_from_content(section_content, i)
         chunks.append(
             Chunk(
                 file_path=file_path,
@@ -91,6 +117,8 @@ def chunk_file(
                 content=section_content,
                 title=title,
                 token_count=estimate_tokens(section_content),
+                section_slug=section_slug,
+                span_hash=span_sha256(section_content),
             )
         )
 
@@ -101,8 +129,54 @@ def chunk_file(
             content=content,
             title=title,
             token_count=tokens,
+            line_range=(1, max(1, len((raw_content or content).splitlines()))),
+            section_slug="opening",
+            span_hash=span_sha256(content),
         )
     ]
+
+
+def _chunk_from_sidecar(
+    file_path: str,
+    raw_content: str,
+    title: str | None,
+    sidecar: ChunkSidecar,
+) -> list[Chunk]:
+    """Build index chunks from an RFC-004 sidecar."""
+    chunks: list[Chunk] = []
+    for sidecar_chunk in sidecar.chunks:
+        raw_span = extract_line_range_text(raw_content, sidecar_chunk.line_range)
+        content = embeddable_span(raw_span).strip("\n")
+        if not content:
+            continue
+        chunks.append(
+            Chunk(
+                file_path=file_path,
+                chunk_index=sidecar_chunk.chunk_order,
+                content=content,
+                title=title,
+                token_count=estimate_tokens(content),
+                line_range=sidecar_chunk.line_range,
+                section_slug=section_slug_from_chunk(sidecar_chunk),
+                sidecar_chunk_id=sidecar_chunk.chunk_id or None,
+                span_hash=span_sha256(content),
+            )
+        )
+    return chunks
+
+
+def _section_slug_from_content(section_content: str, index: int) -> str:
+    if index == 0:
+        return "opening"
+    match = _HEADING_RE.search(section_content)
+    if match:
+        return _slugify(match.group(2))
+    return f"section-{index}"
+
+
+def _slugify(text: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return slug or "section"
 
 
 def _split_at_headings(content: str) -> list[str]:

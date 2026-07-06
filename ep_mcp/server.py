@@ -563,8 +563,14 @@ def build_app(
             "verified_at": result.verified_at,
             "chunk_index": result.chunk_index,
             "original_span": result.original_span,
+            "original_markdown": result.original_markdown,
             "provenance_block": result.provenance_block,
             "byte_offset": result.byte_offset,
+            "fragment_id": result.fragment_id,
+            "line_range": list(result.line_range) if result.line_range else None,
+            "confidence": result.confidence,
+            "excerpt": result.excerpt,
+            "stale": result.stale,
         }
 
     routes = [

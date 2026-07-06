@@ -108,8 +108,14 @@ async def ep_search(
             "graph_expanded": r.graph_expanded,
             "requires_expanded": r.requires_expanded,
             "original_span": r.original_span,
+            "original_markdown": r.original_markdown,
             "provenance_block": r.provenance_block,
             "byte_offset": r.byte_offset,
+            "fragment_id": r.fragment_id,
+            "line_range": list(r.line_range) if r.line_range else None,
+            "confidence": r.confidence,
+            "excerpt": r.excerpt,
+            "stale": r.stale,
         }
         for r in results
     ]

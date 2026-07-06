@@ -63,7 +63,39 @@ class SearchResult(BaseModel):
         None,
         description="Structured provenance metadata for the returned span",
     )
-    byte_offset: int | None = Field(
+    byte_offset: int | list[int] | None = Field(
         None,
-        description="UTF-8 byte offset of original_span within the raw markdown file",
+        description="UTF-8 byte offset(s) of the span within the raw markdown file",
+    )
+    fragment_id: str | None = Field(
+        None,
+        description="RFC-003 content-addressed span ID",
+    )
+    line_range: tuple[int, int] | None = Field(
+        None,
+        description="1-indexed inclusive line range in the source markdown file",
+    )
+    section_slug: str | None = Field(
+        None,
+        description="Kebab-case section slug used in fragment_id",
+    )
+    span_hash: str | None = Field(
+        None,
+        description="SHA-256 hex digest of the embeddable span at index time",
+    )
+    confidence: str | None = Field(
+        None,
+        description="Provenance grade from frontmatter",
+    )
+    excerpt: str | None = Field(
+        None,
+        description="Matched passage (same as text in reconstruct mode)",
+    )
+    original_markdown: str | None = Field(
+        None,
+        description="Full source span from the raw markdown file (RFC-003)",
+    )
+    stale: bool | None = Field(
+        None,
+        description="True when the span hash no longer matches the indexed hash",
     )

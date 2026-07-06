@@ -20,11 +20,13 @@ def _engine() -> RetrievalEngine:
 id: test-pack/concepts/alpha
 verified_at: 2026-05-05
 verified_by: test-suite
+confidence: expert-verified
 ---
 # Alpha
 
 Alpha is the first concept.
 """
+    content = "# Alpha\n\nAlpha is the first concept.\n"
     pack = Pack(
         slug="test-pack",
         name="Test Pack",
@@ -46,11 +48,12 @@ Alpha is the first concept.
                 tags=["alpha"],
                 provenance=Provenance(
                     id="test-pack/concepts/alpha",
-                    content_hash="abc123",
+                    content_hash="sha256:abc123",
                     verified_at="2026-05-05",
                     verified_by="test-suite",
+                    confidence="expert-verified",
                 ),
-                content="# Alpha\n\nAlpha is the first concept.\n",
+                content=content,
                 raw_content=raw,
                 size_tokens=10,
             )
@@ -61,26 +64,35 @@ Alpha is the first concept.
 
 def test_reconstruct_enriches_whole_file_result():
     engine = _engine()
+    content = "# Alpha\n\nAlpha is the first concept.\n"
     result = SearchResult(
-        text="# Alpha\n\nAlpha is the first concept.\n",
+        text=content,
         source_file="concepts/alpha.md",
         id="test-pack/concepts/alpha",
-        content_hash="abc123",
+        content_hash="sha256:abc123",
         verified_at="2026-05-05",
         score=0.9,
         type="concept",
         tags=["alpha"],
         chunk_index=0,
         title="Alpha",
+        section_slug="opening",
+        span_hash=__import__("hashlib").sha256(content.encode()).hexdigest(),
+        confidence="expert-verified",
     )
 
     engine._enrich_with_reconstruct([result])
 
     assert result.original_span.startswith("---\nid: test-pack/concepts/alpha")
-    assert result.byte_offset == 0
-    assert result.provenance_block["id"] == "test-pack/concepts/alpha"
-    assert result.provenance_block["source_file"] == "concepts/alpha.md"
-    assert result.provenance_block["chunk_index"] == 0
-    assert result.provenance_block["verified_by"] == "test-suite"
+    assert result.original_markdown == result.original_span
+    assert result.byte_offset[0] == 0
+    assert result.byte_offset[1] == len(result.original_span.encode("utf-8"))
+    assert result.fragment_id.startswith("test-pack/concepts/alpha#opening:")
+    assert result.line_range[0] == 1
+    assert result.stale is False
+    assert result.excerpt == content
+    assert result.content_hash.startswith("sha256:")
+    assert result.provenance_block["fragment_id"] == result.fragment_id
+    assert result.provenance_block["confidence"] == "expert-verified"
     assert result.provenance_block["span_sha256"].startswith("sha256:")
-    assert result.provenance_block["file_sha256"].startswith("sha256:")
+    assert result.provenance_block["file_sha256"] == "sha256:abc123"

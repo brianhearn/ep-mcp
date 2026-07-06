@@ -12,6 +12,10 @@ class Provenance(BaseModel):
     content_hash: str | None = None
     verified_at: str | None = None
     verified_by: str | None = None
+    confidence: str | None = Field(
+        None,
+        description="Provenance grade: expert-verified | crawled | inferred",
+    )
 
 
 class PackFile(BaseModel):

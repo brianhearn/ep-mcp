@@ -139,6 +139,7 @@ def _inventory_files(pack_path: Path, manifest) -> dict[str, PackFile]:
             content_hash=frontmatter.get("content_hash"),
             verified_at=str(frontmatter["verified_at"]) if "verified_at" in frontmatter else None,
             verified_by=frontmatter.get("verified_by"),
+            confidence=frontmatter.get("confidence"),
         )
 
         # Determine retrieval strategy from context tiers
