@@ -663,11 +663,23 @@ Search normally returns frontmatter-stripped text because that is the cleanest p
 
 Reconstruct mode is deliberately post-retrieval: it does not affect vector/BM25 scoring, MMR, graph expansion, `requires:` expansion, or result ordering. It only adds verification payloads after the final result list is assembled.
 
-Returned enrichment fields:
+Returned enrichment fields (RFC-003 fragment provenance envelope):
 
-- `original_span` — source markdown span used for verification. Whole-file chunks return the raw markdown file, including frontmatter; split chunks return the matched section when possible.
-- `byte_offset` — UTF-8 byte offset of the span in the raw markdown file.
-- `provenance_block` — `id`, `source_file`, `chunk_index`, `content_hash`, `verified_at`, `verified_by`, `byte_offset`, `span_sha256`, and `file_sha256`.
+- `fragment_id` — content-addressed span ID: `{id}#{section-slug}:{sha256-prefix-12}`
+- `line_range` — 1-indexed inclusive `[start, end]` in the raw source `.md`
+- `original_markdown` — full source span from the raw markdown file (host may highlight; ep-mcp returns raw span only)
+- `excerpt` — matched passage (same as `text` in reconstruct mode)
+- `content_hash` — span-level `sha256:` hash of the embeddable span text
+- `byte_offset` — UTF-8 byte range `[start, end]` of the span in the raw markdown file
+- `stale` — `true` when the live span hash no longer matches the indexed `span_hash`
+- `confidence` — optional provenance grade (`expert-verified` | `crawled` | `inferred`) from frontmatter
+
+Legacy fields retained for backward compatibility:
+
+- `original_span` — alias of `original_markdown`
+- `provenance_block` — structured dict with `id`, `source_file`, `chunk_index`, `fragment_id`, `line_range`, `content_hash`, `verified_at`, `verified_by`, `confidence`, `byte_offset`, `span_sha256`, `file_sha256`, and `stale`
+
+Index-time prerequisites: per-chunk `line_range`, `section_slug`, and `span_hash` are stored at build time (from header-boundary split or an RFC-004 `.chunks.yaml` sidecar). Existing indexes built before this metadata was stored require a reindex for accurate `fragment_id` and `stale` detection.
 
 This is the runtime counterpart to ExpertPack's provenance-first schema: agents can cite a result, verify the span hash, and show the exact source text behind an answer without changing the retrieval pipeline.
 

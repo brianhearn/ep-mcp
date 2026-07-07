@@ -19,7 +19,7 @@ An MCP server that turns any ExpertPack into a live, queryable knowledge service
 - **BM25 fallback mode**: Embedding provider outage degrades gracefully to lexical-only search (coverage + density + path + length scoring) instead of a hard error
 - **Cross-encoder reranker**: Optional second-pass precision reranker (disabled by default, ~70ms warm latency when enabled)
 - **Provenance-first**: Every result includes `id`, `content_hash`, `verified_at`, `source_file`
-- **Reconstruct mode**: Opt-in `reconstruct=true` / `reconstruct: true` enriches results with original markdown spans, byte offsets, and verification hashes so agents can prove exactly what source text grounded an answer
+- **Reconstruct mode (RFC-003)**: Opt-in `reconstruct=true` / `reconstruct: true` enriches results with `fragment_id`, `line_range`, `original_markdown`, span-level `content_hash`, `excerpt`, `stale`, and byte offsets so agents can prove exactly what source text grounded an answer
 - **EP-native chunking**: Files are treated as atomic retrieval units (split at `##` only for oversized content)
 - **Frontmatter aware**: Strips metadata for embedding, extracts `type`, `tags`, `requires`, etc. for boosting/expansion/filtering
 - **Incremental indexing**: Content-hash based staleness detection — only re-embeds changed files
