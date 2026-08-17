@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ep-mcp"
-version = "0.1.0"
+version = "0.5.0"
 description = "ExpertPack MCP Server — expertise-as-a-service over MCP"
 readme = "README.md"
 license = "MIT"
@@ -14,11 +14,11 @@ authors = [
 ]
 
 dependencies = [
-    "mcp[cli]>=1.0",
+    "mcp[cli]>=2,<3",
     "uvicorn>=0.30",
     "starlette>=0.40",
     "pyyaml>=6.0",
-    "pydantic>=2.0",
+    "pydantic>=2.12",
     "sqlite-vec>=0.1",
     "google-genai>=0.8",
     "openai>=1.50",

@@ -6,7 +6,15 @@ from pathlib import Path
 
 import yaml
 
-from .models import ContextTiers, FreshnessMetadata, Manifest, MCPConfig, MCPPromptDeclaration, MCPResourcesConfig
+from .models import (
+    AuthorityBoundary,
+    ContextTiers,
+    FreshnessMetadata,
+    Manifest,
+    MCPConfig,
+    MCPPromptDeclaration,
+    MCPResourcesConfig,
+)
 
 
 class ManifestError(Exception):
@@ -67,6 +75,8 @@ def parse_manifest(manifest_path: Path) -> Manifest:
     mcp_raw = raw.get("mcp", {})
     mcp_config = _parse_mcp_config(mcp_raw)
 
+    authority = _parse_authority_boundary(raw.get("authority_boundary"))
+
     return Manifest(
         slug=raw["slug"],
         name=raw["name"],
@@ -78,7 +88,24 @@ def parse_manifest(manifest_path: Path) -> Manifest:
         context=context,
         freshness=freshness,
         mcp=mcp_config,
+        authority_boundary=authority,
         raw=raw,
+    )
+
+
+def _parse_authority_boundary(raw: object) -> AuthorityBoundary | None:
+    """Parse optional authority_boundary from manifest.yaml."""
+    if not isinstance(raw, dict):
+        return None
+    in_scope = str(raw.get("in_scope") or "").strip()
+    out_of_scope = _ensure_list(raw.get("out_of_scope", []))
+    if not in_scope and not out_of_scope:
+        return None
+    return AuthorityBoundary(
+        in_scope=in_scope,
+        out_of_scope=out_of_scope,
+        refuse_when=_ensure_list(raw.get("refuse_when", [])),
+        no_source_no_claim=bool(raw.get("no_source_no_claim", False)),
     )
 
 

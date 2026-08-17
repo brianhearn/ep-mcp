@@ -10,7 +10,7 @@ from pathlib import Path
 import yaml
 
 from .manifest import ManifestError, parse_manifest
-from .models import GraphEdge, Pack, PackFile, PackGraph, Provenance
+from .models import Activation, GraphEdge, Pack, PackFile, PackGraph, Provenance
 
 logger = logging.getLogger(__name__)
 
@@ -111,8 +111,8 @@ def load_pack(
 def _inventory_files(pack_path: Path, manifest) -> dict[str, PackFile]:
     """Walk the pack directory and parse all .md files."""
     files: dict[str, PackFile] = {}
-    always_set = set(manifest.context.always)
-    on_demand_set = set(manifest.context.on_demand)
+    always_set = {p.replace("\\", "/") for p in manifest.context.always}
+    on_demand_set = {p.replace("\\", "/") for p in manifest.context.on_demand}
 
     for md_file in sorted(pack_path.rglob("*.md")):
         # Skip hidden/infrastructure directories
@@ -120,7 +120,7 @@ def _inventory_files(pack_path: Path, manifest) -> dict[str, PackFile]:
         if any(part in _SKIP_DIRS for part in rel_path.parts):
             continue
 
-        rel_str = str(rel_path)
+        rel_str = rel_path.as_posix()
         raw_content = md_file.read_text(encoding="utf-8", errors="replace")
 
         # Parse frontmatter
@@ -142,13 +142,22 @@ def _inventory_files(pack_path: Path, manifest) -> dict[str, PackFile]:
             confidence=frontmatter.get("confidence"),
         )
 
-        # Determine retrieval strategy from context tiers
-        if rel_str in always_set:
+        concept_scope = frontmatter.get("concept_scope")
+        if concept_scope is not None:
+            concept_scope = str(concept_scope)
+        fm_strategy = frontmatter.get("retrieval_strategy")
+        # Navigation wins over context-tier overrides so hubs never enter the RAG pool.
+        if fm_strategy == "navigation" or concept_scope == "navigation":
+            retrieval_strategy = "navigation"
+        elif rel_str in always_set:
             retrieval_strategy = "always"
         elif rel_str in on_demand_set:
             retrieval_strategy = "on_demand"
         else:
-            retrieval_strategy = frontmatter.get("retrieval_strategy", "standard")
+            retrieval_strategy = fm_strategy or "standard"
+
+        file_type = frontmatter.get("type")
+        activation = _parse_activation(frontmatter.get("activation"), file_type)
 
         # Compute content hash (of stripped content) for index staleness checks
         content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
@@ -159,11 +168,13 @@ def _inventory_files(pack_path: Path, manifest) -> dict[str, PackFile]:
         files[rel_str] = PackFile(
             path=rel_str,
             title=title,
-            type=frontmatter.get("type"),
+            type=file_type,
             tags=_ensure_list(frontmatter.get("tags", [])),
             provenance=provenance,
             retrieval_strategy=retrieval_strategy,
+            concept_scope=concept_scope,
             requires=_ensure_list(frontmatter.get("requires", [])),
+            activation=activation,
             content=content,
             raw_content=raw_content,
             size_tokens=size_tokens,
@@ -210,6 +221,20 @@ def _estimate_tokens(text: str) -> int:
     """Fast token count approximation: word count × 1.3."""
     words = len(text.split())
     return int(words * 1.3)
+
+
+def _parse_activation(raw: object, file_type: str | None) -> Activation | None:
+    """Parse activation: frontmatter on operational atoms only."""
+    if not isinstance(raw, dict):
+        return None
+    if file_type not in {"workflow", "decision", "gotcha", "phase"}:
+        return None
+    tools = _ensure_list(raw.get("tools", []))
+    constraints = _ensure_list(raw.get("constraints", []))
+    next_atoms = _ensure_list(raw.get("next", []))
+    if not tools and not constraints and not next_atoms:
+        return None
+    return Activation(tools=tools, constraints=constraints, next=next_atoms)
 
 
 def _ensure_list(value: object) -> list[str]:

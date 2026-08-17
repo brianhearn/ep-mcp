@@ -1,7 +1,7 @@
 # ExpertPack MCP — Architecture
 
-**Version:** 0.4
-**Date:** 2026-04-19
+**Version:** 0.5
+**Date:** 2026-08-17
 **Authors:** Brian Hearn, EasyBot
 **Prerequisite:** [VISION.md](VISION.md) v0.4
 
@@ -13,10 +13,10 @@ Decisions made before drafting, confirmed by Brian:
 
 | # | Decision | Choice | Rationale |
 |---|----------|--------|-----------|
-| 1 | SDK / Language | Python (FastMCP) | Retrieval stack is Python-native (embeddings, sqlite-vec, BM25). MCP Python SDK's FastMCP is mature with native Streamable HTTP support. |
+| 1 | SDK / Language | Python (`MCPServer`, mcp>=2) | Retrieval stack is Python-native (embeddings, sqlite-vec, BM25). MCP Python SDK v2 (`MCPServer`) speaks 2026-07-28 and still serves 2025-era clients from the same process. |
 | 2 | Retrieval engine | Embedded SQLite (FTS5 + sqlite-vec) | No external database dependency. Same hybrid approach proven in help bot evals (84.8% correctness). Single-file, portable. |
 | 3 | Embedding provider | Configurable interface, Gemini default | Azure OpenAI supported as first-class embedding provider. Clean provider abstraction supports any backend. |
-| 4 | Server structure | Modular (FastMCP + pack loader + index manager + retrieval engine) | Separation of concerns. Each module testable independently. |
+| 4 | Server structure | Modular (MCPServer + pack loader + index manager + retrieval engine) | Separation of concerns. Each module testable independently. |
 | 5 | Multi-pack routing | Path-based (`/packs/{slug}/mcp`) | Each pack gets its own Streamable HTTP endpoint, index, and resource namespace. Clean URL semantics. |
 
 ---
@@ -39,9 +39,9 @@ Decisions made before drafting, confirmed by Brian:
 │  └───────────────────┬───────────────────────────────┘  │
 │                      │                                  │
 │  ┌───────────────────▼───────────────────────────────┐  │
-│  │              FastMCP Server                       │  │
+│  │              MCPServer (SDK v2)                   │  │
 │  │   Tool registration, resource registration,       │  │
-│  │   capability negotiation, session management      │  │
+│  │   capability negotiation, dual-era sessions       │  │
 │  └───────────────────┬───────────────────────────────┘  │
 │                      │                                  │
 │  ┌───────────────────▼───────────────────────────────┐  │
@@ -78,10 +78,9 @@ Decisions made before drafting, confirmed by Brian:
 ```
 ep_mcp/
 ├── __init__.py
-├── server.py              # FastMCP server setup, tool/resource registration
+├── server.py              # MCPServer setup, tool/resource registration
 ├── config.py              # Server configuration (packs, auth, embedding provider)
-├── auth.py                # API key validation (phase 1), OAuth 2.1 (phase 2)
-├── router.py              # Multi-pack routing: path → pack instance
+├── auth.py                # API key validation for HTTP /search (phase 1)
 ├── pack/
 │   ├── __init__.py
 │   ├── loader.py          # Load & validate ExpertPack from disk
@@ -103,13 +102,13 @@ ep_mcp/
 │   ├── base.py            # Abstract EmbeddingProvider interface
 │   ├── gemini.py          # Google Gemini (gemini-embedding-001)
 │   ├── azure_openai.py    # Azure OpenAI (text-embedding-3-small/large)
-│   ├── openai.py          # Direct OpenAI API
 │   └── cache.py           # Embedding cache (content_hash → vector)
 ├── tools/
 │   ├── __init__.py
 │   ├── ep_search.py       # ep_search tool implementation
+│   ├── ep_read.py         # ep_read whole-atom consume-loop tool
 │   ├── ep_list_topics.py  # ep_list_topics tool implementation
-│   └── ep_graph_traverse.py  # ep_graph_traverse (post-MVP)
+│   └── ep_graph_traverse.py  # ep_graph_traverse
 ├── resources/
 │   ├── __init__.py
 │   └── pack_resources.py  # MCP resource registration (always-tier files, manifest, overview)
@@ -124,9 +123,8 @@ ep_mcp/
 ```
 cli.py
   → config.py (load server config)
-  → server.py (create FastMCP instance)
-    → auth.py (middleware)
-    → router.py (multi-pack dispatch)
+  → server.py (create MCPServer instance; path routing is inline)
+    → auth.py (HTTP /search only; MCP mounts rely on reverse proxy)
       → pack/loader.py (load each configured pack)
         → pack/manifest.py (parse manifest.yaml)
         → pack/models.py (structured pack data)
@@ -138,6 +136,8 @@ cli.py
         → retrieval/engine.py (query orchestration)
           → index/sqlite_store.py (FTS5 + vec queries)
           → retrieval/scorer.py (fusion + re-rank)
+      → tools/ep_read.py
+        → pack/models.py (whole-atom read)
       → tools/ep_list_topics.py
         → pack/models.py (pack structure data)
       → resources/pack_resources.py
@@ -205,7 +205,7 @@ class PackFile:
     content_hash: str | None   # SHA-256 of content (frontmatter stripped)
     verified_at: str | None    # ISO 8601 verification date
     verified_by: str | None    # "human" or "agent"
-    retrieval_strategy: str    # "standard" (default), "always", "on_demand"
+    retrieval_strategy: str    # "standard" (default), "always", "on_demand", "atomic", "navigation"
     content: str               # Full markdown content (frontmatter stripped)
     raw_content: str           # Full markdown content (frontmatter intact, for resource serving)
     size_tokens: int           # Approximate token count
@@ -326,8 +326,9 @@ ExpertPack uses **schema-as-chunker**: files are authored as retrieval units. Th
 
 1. **Default:** One file = one chunk. Most EP files are 200-800 tokens and pass through intact.
 2. **Oversized files (>1000 tokens):** Split at markdown heading boundaries (## or ###). Each split retains the file's title as a prefix for context.
-3. **Always-load files** (from manifest `context.always`): Indexed but also flagged for guaranteed inclusion in search results when relevant.
-4. **On-demand files** (from manifest `context.on_demand`): Indexed normally. The "on demand" designation is informational for the consuming agent, not a retrieval filter.
+3. **RFC-004 sidecars:** Authoritative `line_range` / `chunk_order`. Optional `context_prefix` is prepended for embed + BM25 only (`indexed_content`); `chunks.content` and reconstruct spans stay the original body.
+4. **Always-load files** (from manifest `context.always`): Indexed (unless also navigation) and exposed as MCP Resources.
+5. **Not indexed:** `retrieval_strategy: navigation`, `concept_scope: navigation`, `_index.md`, `meta/source-coverage.md`, and `context.on_demand`. Those files remain readable via `ep_read` and resources.
 
 Token counting uses a fast approximation (whitespace split × 0.75) for indexing decisions. Exact counts are not needed — the 1000-token threshold is a guideline, not a hard boundary.
 
@@ -873,7 +874,11 @@ async def ep_list_topics(
 }
 ```
 
-### 7.3 `ep_graph_traverse` (Post-MVP)
+### 7.3 `ep_read` (Consume loop)
+
+Reads a whole atom by pack-relative `path` or provenance `id`. Search hits (especially sidecar fragments) are locators; `ep_read` is the answer. Returns `content`, `requires`, `activation`, and optional reconstruct fields. Navigation and on-demand files are readable here even though they are not in the RAG index.
+
+### 7.4 `ep_graph_traverse` (Post-MVP)
 
 Follow relationships in the pack's knowledge graph.
 
@@ -897,7 +902,7 @@ async def ep_graph_traverse(
     """
 ```
 
-### 7.4 Tool Annotations
+### 7.5 Tool Annotations
 
 All EP MCP tools are annotated per MCP spec:
 
@@ -936,15 +941,16 @@ Any file in the pack can be accessed directly via URI template. This supports ag
 ```
 ep://{pack_slug}/manifest            → Pack manifest (YAML as JSON)
 ep://{pack_slug}/overview            → overview.md (always exposed)
+ep://{pack_slug}/authority           → authority_boundary (or null)
 ep://{pack_slug}/always/{path}       → A specific always-tier file
-ep://{pack_slug}/file/{path}         → Any file by path (raw, with frontmatter)
-ep://{pack_slug}/graph               → Knowledge graph (_graph.yaml)
+ep://{pack_slug}/file/{+path}        → Any file by path (raw, with frontmatter)
+ep://{pack_slug}/files               → File listing JSON
 ```
 
 ### 8.3 Resource Registration
 
 ```python
-def register_resources(mcp: FastMCP, pack: Pack) -> None:
+def register_resources(mcp: MCPServer, pack: Pack) -> None:
     """Register MCP Resources for a pack."""
 
     # 1. Always expose manifest and overview
@@ -957,6 +963,11 @@ def register_resources(mcp: FastMCP, pack: Pack) -> None:
     async def get_overview() -> str:
         """Pack overview — what this pack covers and how to navigate it."""
         return pack.files[pack.entry_point].raw_content
+
+    @mcp.resource(f"ep://{pack.slug}/authority")
+    async def get_authority() -> str:
+        """Pack authority_boundary (in_scope / out_of_scope / refuse_when)."""
+        return json.dumps(pack.manifest.authority_boundary, indent=2, default=str)
 
     # 2. Expose always-tier files
     if pack.mcp_config.include_always_tier:
@@ -975,7 +986,7 @@ def register_resources(mcp: FastMCP, pack: Pack) -> None:
                 return pack.files[p].raw_content
 
     # 4. URI template for on-demand file access
-    @mcp.resource(f"ep://{pack.slug}/file/{{path}}")
+    @mcp.resource(f"ep://{pack.slug}/file/{{+path}}")
     async def get_file(path: str) -> str:
         """Read any pack file by path. Returns raw markdown including frontmatter."""
         if path not in pack.files:
@@ -1059,7 +1070,7 @@ PromptMessage(
 ### 9.4 Prompt Registration
 
 ```python
-def register_prompts(mcp: FastMCP, pack: Pack) -> None:
+def register_prompts(mcp: MCPServer, pack: Pack) -> None:
     """Register MCP Prompts for a pack."""
 
     declarations = _resolve_prompt_declarations(pack)
@@ -1123,7 +1134,7 @@ The Prompts primitive applies to all pack types, but the workflow content varies
 
 ## 10. MCP Instructions
 
-The `instructions=` parameter on a FastMCP server instance is the agent's first orientation signal. It's what MCP-compatible hosts display during server registration and what capable agents read to decide when to call this server.
+The `instructions=` parameter on an MCPServer instance is the agent's first orientation signal. It's what MCP-compatible hosts display during server registration and what capable agents read to decide when to call this server. Instructions also encode the consume loop (search → `ep_read` → stop at 3 / hard cap 7) and any `authority_boundary`.
 
 ### 10.1 Source
 
@@ -1143,11 +1154,12 @@ def get_server_instructions(pack: Pack) -> str:
 ### 10.2 Usage in Server Creation
 
 ```python
-mcp = FastMCP(
-    name=f"ep-mcp-{pack.slug}",
+mcp = MCPServer(
+    f"ep-mcp-{pack.slug}",
     instructions=get_server_instructions(pack),
-    stateless_http=True,
+    version=pack.version,
 )
+# stateless_http and TransportSecuritySettings go on streamable_http_app()
 ```
 
 ### 10.3 Length Constraint
@@ -1160,7 +1172,7 @@ The MCP spec doesn't define a hard limit, but EP MCP warns (`W-MCP-03`) if `mcp.
 
 ### 11.1 Streamable HTTP (Primary)
 
-The server uses FastMCP's built-in Streamable HTTP transport. Single endpoint per pack:
+The server uses MCPServer's built-in Streamable HTTP transport. Single endpoint per pack:
 
 ```
 POST /packs/{slug}/mcp     → JSON-RPC requests (tool calls, resource reads)
@@ -1168,9 +1180,11 @@ GET  /packs/{slug}/mcp     → SSE stream (optional, for server-initiated notifi
 DELETE /packs/{slug}/mcp   → Session termination
 ```
 
+**DNS-rebinding protection (SDK v2):** `streamable_http_app()` defaults `host="127.0.0.1"` and rejects other `Host` headers with **421** unless `transport_security=TransportSecuritySettings(...)` is passed with `allowed_hosts` / `allowed_origins`. Production config: `server.mcp_allowed_hosts` and `server.mcp_allowed_origins` (include `host:*` forms for ported Host headers). `stateless_http=True` is also passed here, not to the `MCPServer` constructor.
+
 **Session management:** Streamable HTTP sessions are stateless from the server's perspective — no session affinity required. Each request carries its own auth context and pack routing. MCP session IDs (`Mcp-Session-Id` header) are accepted but not required for the MVP tools (all read-only, no multi-turn state).
 
-**ASGI mounting:** The FastMCP app mounts onto a Starlette/Uvicorn ASGI server. This allows:
+**ASGI mounting:** The MCPServer app mounts onto a Starlette/Uvicorn ASGI server. This allows:
 - Multiple pack endpoints on the same server process
 - Health check endpoint at `/health`
 - Pack listing endpoint at `/packs` (returns configured pack slugs)
@@ -1292,7 +1306,7 @@ Internet
      │
      ▼
 ┌────────────────┐
-│  EP MCP Server  │  Uvicorn + Starlette + FastMCP
+│  EP MCP Server  │  Uvicorn + Starlette + MCPServer
 │  :8000          │
 │                 │
 │  /health        │  → health check
@@ -1402,7 +1416,7 @@ pytest tests/mcp/ -v
 
 ```
 # Core
-mcp[cli]>=1.0               # MCP Python SDK (FastMCP, transports)
+mcp[cli]>=2,<3              # MCP Python SDK v2 (MCPServer, 2026-07-28 + legacy)
 uvicorn>=0.30                # ASGI server
 starlette>=0.40              # ASGI framework (routing, middleware)
 pyyaml>=6.0                  # manifest.yaml parsing
@@ -1478,20 +1492,14 @@ ExpertPack MCP is **Layer 1** — the generic knowledge serving layer. Domain MC
 └─────────────────────────────────────────────┘
 ```
 
-**Integration pattern:** The Domain MCP server imports `ep_mcp` as a library, loads the my-pack pack, and registers additional domain-specific tools alongside the EP tools. Same FastMCP instance, same transport, unified tool surface.
+**Integration pattern:** A domain MCP server can import `create_pack_mcp` from `ep_mcp.server`, load a pack, and register additional tools on the same `MCPServer` instance.
 
 ```python
-from ep_mcp import create_pack_server
-from domain_mcp.tools import register_domain_tools
+from ep_mcp.server import create_pack_mcp
 
-# Create EP MCP server with my-pack pack
-server = create_pack_server(pack_path="/data/packs/my-pack")
-
-# Register domain-specific tools on the same server
-register_domain_tools(server, api_config=domain_config)
-
-# Serve — agents see both EP tools and domain tools
-server.run(transport="streamable-http")
+server = create_pack_mcp(slug, pack, engine)
+# register domain-specific tools on `server`
+server.run(transport="stdio")
 ```
 
 This is the architectural boundary: EP MCP provides knowledge, domain MCP provides actions. The agent uses knowledge to reason, then tools to execute.

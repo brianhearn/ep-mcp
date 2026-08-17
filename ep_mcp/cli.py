@@ -59,7 +59,7 @@ def serve(config_path: str, transport: str) -> None:
     from .embeddings.cache import QueryEmbeddingCache
     from pathlib import Path
 
-    async def startup():
+    async def _load_instances():
         provider = create_embedding_provider(config)
         # Wrap with query embedding cache — warm latency ~1ms vs ~4s live.
         # Use the first pack's index_dir if configured (so the cache survives
@@ -81,18 +81,31 @@ def serve(config_path: str, transport: str) -> None:
             pack_instances[pack_config.slug] = inst
             click.echo(f"  \u2705 {inst.pack.name}: {len(inst.pack.files)} files, "
                        f"{inst.store.chunk_count()} chunks")
-        return build_app(
-            config,
-            pack_instances,
-            dev_watch=config.dev_mode_watch,
-        )
+        return pack_instances
 
-    app = asyncio.run(startup())
+    if transport == "stdio":
+        if len(config.packs) > 1:
+            click.echo(
+                "stdio serves the first configured pack only "
+                f"({config.packs[0].slug})",
+                err=True,
+            )
+        instances = asyncio.run(_load_instances())
+        first = instances[config.packs[0].slug]
+        click.echo(f"Starting stdio MCP server for pack '{first.pack.slug}'", err=True)
+        first.mcp.run(transport="stdio")
+        return
+
+    async def _startup():
+        instances = await _load_instances()
+        return build_app(config, instances, dev_watch=config.dev_mode_watch)
+
+    app = asyncio.run(_startup())
     click.echo(f"\nServer ready at http://{config.host}:{config.port}")
     click.echo("Endpoints:")
-    click.echo(f"  GET  /health")
-    click.echo(f"  GET  /packs")
-    click.echo(f"  GET  /search?q=<query>&pack=<slug>&n=<max_results>")
+    click.echo("  GET  /health")
+    click.echo("  GET  /packs")
+    click.echo("  GET  /search?q=<query>&pack=<slug>&n=<max_results>")
     for p in config.packs:
         click.echo(f"  POST /packs/{p.slug}/mcp")
 

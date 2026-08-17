@@ -130,6 +130,25 @@ type: process
         m = parse_manifest(path)
         assert m.type == "process"
 
+    def test_authority_boundary(self, tmp_dir):
+        path = _write_manifest(tmp_dir, """
+slug: test
+name: Test
+type: product
+authority_boundary:
+  in_scope: Product knowledge
+  out_of_scope:
+    - Legal advice
+  refuse_when:
+    - No supporting atom
+  no_source_no_claim: true
+""")
+        m = parse_manifest(path)
+        assert m.authority_boundary is not None
+        assert m.authority_boundary.in_scope == "Product knowledge"
+        assert m.authority_boundary.out_of_scope == ["Legal advice"]
+        assert m.authority_boundary.no_source_no_claim is True
+
     def test_context_single_string(self, tmp_dir):
         """Context tiers should handle single string as well as list."""
         path = _write_manifest(tmp_dir, """

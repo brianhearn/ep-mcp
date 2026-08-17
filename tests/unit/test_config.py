@@ -65,6 +65,24 @@ packs:
         assert config.retrieval.vector_weight == 0.7
         assert config.retrieval.min_score == 0.35
         assert config.retrieval.default_max_results == 10
+        assert "localhost" in config.mcp_allowed_hosts
+        assert "https://expertpack.ai" in config.mcp_allowed_origins
+
+    def test_mcp_allowlists(self, tmp_dir):
+        path = _write_config(tmp_dir, """
+server:
+  mcp_allowed_hosts:
+    - "example.test"
+    - "example.test:*"
+  mcp_allowed_origins:
+    - "https://example.test"
+packs:
+  - slug: "test"
+    path: "/tmp/test"
+""")
+        config = load_config(path)
+        assert config.mcp_allowed_hosts == ["example.test", "example.test:*"]
+        assert config.mcp_allowed_origins == ["https://example.test"]
 
     def test_multiple_packs(self, tmp_dir):
         path = _write_config(tmp_dir, """

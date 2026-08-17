@@ -25,14 +25,18 @@ An MCP server that turns any ExpertPack into a live, queryable knowledge service
 - **Incremental indexing**: Content-hash based staleness detection — only re-embeds changed files
 - **Multi-pack support**: Path-based routing at `/packs/{slug}/mcp`
 - **Graph-aware retrieval**: optional post-retrieval expansion via `_graph.yaml` adjacency, including accepted ontology/entity nodes when graph export provides them
+- **`context_prefix` (RFC-004)**: sidecar situating strings are prepended at index time for embed + BM25 only; returned/reconstruct text stays the original atom body
+- **Tier / navigation filter**: `retrieval_strategy: navigation`, `_index.md`, `source-coverage.md`, and `context.on_demand` files are excluded from the RAG pool (still readable via `ep_read` / resources)
 - **Tools**:
   - `ep_search` — primary hybrid retrieval tool
+  - `ep_read` — load a whole atom by path or provenance id (consume-loop step 2)
   - `ep_list_topics` — browse pack structure and available content types
   - `ep_graph_traverse`
 - **Resources**:
   - `ep://{slug}/manifest`
+  - `ep://{slug}/authority`
   - `ep://{slug}/files`
-  - `ep://{slug}/file/{path}` (raw content with frontmatter)
+  - `ep://{slug}/file/{+path}` (raw content with frontmatter)
 - **Transports**: Streamable HTTP (primary, cloud-ready), stdio (local dev)
 - **HTTP endpoint**: `GET /search` (for non-MCP HTTP clients)
 - **Auth**: API key (Phase 1), designed for OAuth 2.1 (Phase 2)
@@ -56,6 +60,13 @@ server:
   host: "127.0.0.1"
   port: 8000
   log_level: "info"
+  # Required for public Host headers (SDK v2 DNS-rebinding protection).
+  # See DEPLOYMENT.md — omit and Streamable HTTP returns 421.
+  mcp_allowed_hosts:
+    - "localhost"
+    - "localhost:*"
+    - "127.0.0.1"
+    - "127.0.0.1:*"
 
 packs:
   - slug: "my-pack"
@@ -76,7 +87,7 @@ For the full configuration reference — embedding providers, retrieval tuning (
 ep-mcp serve --config config.yaml
 ```
 
-The server builds/updates the SQLite index (FTS5 + sqlite-vec) on startup.
+The server builds/updates the SQLite index (FTS5 + sqlite-vec) on startup. **0.5.0 requires a rebuild** of existing indexes (`index_features=context_prefix_v1+nav_filter_v1`); startup does this automatically, or delete `<pack>/.ep-mcp/` first.
 
 The GET `/search` HTTP endpoint is available at:
 
@@ -103,7 +114,7 @@ Only the key for your configured embedding provider is required.
 ## Tech Stack
 
 - **Language**: Python 3.12+
-- **MCP Framework**: FastMCP (from the official `mcp` SDK)
+- **MCP Framework**: official `mcp` SDK v2 (`MCPServer`, spec 2026-07-28, dual-era with 2025 clients)
 - **Storage**: SQLite with FTS5 + [sqlite-vec](https://github.com/asg017/sqlite-vec)
 - **Embeddings**: Gemini (default), configurable Azure OpenAI / OpenAI providers
 - **Web**: Starlette + Uvicorn (for Streamable HTTP)

@@ -23,6 +23,23 @@ pip install -e .
 - For external access set `host: "0.0.0.0"` (or keep the default `127.0.0.1` if running behind a reverse proxy — **recommended**).
 - Set `api_keys` per pack. Treat these as passwords. Use the environment variable `EP_MCP_KEY_{SLUG}` to avoid committing real keys.
 - Copy `.env.example` to `.env` and populate the API keys.
+- **MCP SDK v2 Host allowlist.** Streamable HTTP enables DNS-rebinding protection. Set public hostnames (include `host:*` for ported Host headers):
+
+```yaml
+server:
+  mcp_allowed_hosts:
+    - "expertpack.ai"
+    - "expertpack.ai:*"
+    - "localhost"
+    - "localhost:*"
+    - "127.0.0.1"
+    - "127.0.0.1:*"
+  mcp_allowed_origins:
+    - "https://expertpack.ai"
+    - "https://claude.ai"
+```
+
+- **Reindex required for 0.5.0.** Sidecar `context_prefix` and the navigation/on_demand index filter are stored under `index_features=context_prefix_v1+nav_filter_v1`. Startup rebuilds any older index automatically; you can also `rm -rf <pack>/.ep-mcp/` before restart.
 
 ### Embedding provider
 

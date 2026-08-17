@@ -79,6 +79,7 @@ class SQLiteStore:
                 verified_at TEXT,
                 verified_by TEXT,
                 token_count INTEGER,
+                indexed_content TEXT,
                 UNIQUE(file_path, chunk_index)
             );
 
@@ -110,28 +111,6 @@ class SQLiteStore:
         except sqlite3.OperationalError:
             pass  # Already exists
 
-        # FTS sync triggers
-        for trigger_sql in [
-            """CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
-                INSERT INTO chunks_fts(rowid, content, title)
-                VALUES (new.id, new.content, new.title);
-            END""",
-            """CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
-                INSERT INTO chunks_fts(chunks_fts, rowid, content, title)
-                VALUES ('delete', old.id, old.content, old.title);
-            END""",
-            """CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
-                INSERT INTO chunks_fts(chunks_fts, rowid, content, title)
-                VALUES ('delete', old.id, old.content, old.title);
-                INSERT INTO chunks_fts(rowid, content, title)
-                VALUES (new.id, new.content, new.title);
-            END""",
-        ]:
-            try:
-                c.execute(trigger_sql)
-            except sqlite3.OperationalError:
-                pass
-
         # sqlite-vec virtual table
         try:
             c.execute(f"""
@@ -146,6 +125,30 @@ class SQLiteStore:
         c.commit()
 
         self._migrate_schema()
+        self._install_fts_triggers()
+
+    def _install_fts_triggers(self) -> None:
+        """(Re)install FTS sync triggers that prefer indexed_content when set."""
+        self.conn.executescript("""
+            DROP TRIGGER IF EXISTS chunks_ai;
+            DROP TRIGGER IF EXISTS chunks_ad;
+            DROP TRIGGER IF EXISTS chunks_au;
+            CREATE TRIGGER chunks_ai AFTER INSERT ON chunks BEGIN
+                INSERT INTO chunks_fts(rowid, content, title)
+                VALUES (new.id, COALESCE(new.indexed_content, new.content), new.title);
+            END;
+            CREATE TRIGGER chunks_ad AFTER DELETE ON chunks BEGIN
+                INSERT INTO chunks_fts(chunks_fts, rowid, content, title)
+                VALUES ('delete', old.id, COALESCE(old.indexed_content, old.content), old.title);
+            END;
+            CREATE TRIGGER chunks_au AFTER UPDATE ON chunks BEGIN
+                INSERT INTO chunks_fts(chunks_fts, rowid, content, title)
+                VALUES ('delete', old.id, COALESCE(old.indexed_content, old.content), old.title);
+                INSERT INTO chunks_fts(rowid, content, title)
+                VALUES (new.id, COALESCE(new.indexed_content, new.content), new.title);
+            END;
+        """)
+        self.conn.commit()
 
     def _migrate_schema(self) -> None:
         """Add newer provenance/chunk columns to existing databases."""
@@ -156,6 +159,7 @@ class SQLiteStore:
             ("sidecar_chunk_id", "TEXT"),
             ("span_hash", "TEXT"),
             ("confidence", "TEXT"),
+            ("indexed_content", "TEXT"),
         ):
             try:
                 c = self.conn
@@ -187,6 +191,7 @@ class SQLiteStore:
         sidecar_chunk_id: str | None = None,
         span_hash: str | None = None,
         confidence: str | None = None,
+        indexed_content: str | None = None,
     ) -> int:
         """Insert or update a chunk. Returns the chunk row id."""
         c = self.conn
@@ -206,12 +211,13 @@ class SQLiteStore:
                     pack_slug = ?, prov_id = ?, content_hash = ?,
                     verified_at = ?, verified_by = ?, token_count = ?,
                     line_start = ?, line_end = ?, section_slug = ?,
-                    sidecar_chunk_id = ?, span_hash = ?, confidence = ?
+                    sidecar_chunk_id = ?, span_hash = ?, confidence = ?,
+                    indexed_content = ?
                 WHERE id = ?""",
                 (content, title, type_, tags_json, pack_slug, prov_id,
                  content_hash, verified_at, verified_by, token_count,
                  line_start, line_end, section_slug, sidecar_chunk_id,
-                 span_hash, confidence, chunk_id),
+                 span_hash, confidence, indexed_content, chunk_id),
             )
             # Update vector
             if embedding:
@@ -226,12 +232,12 @@ class SQLiteStore:
                     (file_path, chunk_index, content, title, type, tags,
                      pack_slug, prov_id, content_hash, verified_at, verified_by,
                      token_count, line_start, line_end, section_slug,
-                     sidecar_chunk_id, span_hash, confidence)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                     sidecar_chunk_id, span_hash, confidence, indexed_content)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (file_path, chunk_index, content, title, type_, tags_json,
                  pack_slug, prov_id, content_hash, verified_at, verified_by,
                  token_count, line_start, line_end, section_slug,
-                 sidecar_chunk_id, span_hash, confidence),
+                 sidecar_chunk_id, span_hash, confidence, indexed_content),
             )
             chunk_id = cursor.lastrowid
             # Insert vector

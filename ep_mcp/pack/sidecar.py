@@ -24,6 +24,7 @@ class SidecarChunk:
     section: str | None
     line_range: tuple[int, int]
     chunk_summary: str | None = None
+    context_prefix: str | None = None
 
 
 @dataclass
@@ -78,6 +79,7 @@ def load_sidecar(path: Path) -> ChunkSidecar | None:
                 section=item.get("section"),
                 line_range=(int(line_range[0]), int(line_range[1])),
                 chunk_summary=item.get("chunk_summary") or None,
+                context_prefix=item.get("context_prefix") or None,
             )
         )
 

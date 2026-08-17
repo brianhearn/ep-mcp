@@ -1,12 +1,10 @@
-"""FastMCP server setup, tool/resource registration, multi-pack routing."""
+"""MCPServer setup, tool/resource registration, multi-pack routing."""
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -29,6 +27,7 @@ from .prompts.pack_prompts import register_prompts
 from .resources.pack_resources import register_resources
 from .tools.ep_graph_traverse import ep_graph_traverse
 from .tools.ep_list_topics import ep_list_topics
+from .tools.ep_read import ep_read
 from .tools.ep_search import ep_search, log_query
 
 logger = logging.getLogger(__name__)
@@ -75,15 +74,31 @@ def _get_server_instructions(pack: Pack) -> str:
 
     Priority: mcp.instructions in manifest > manifest.description > generic fallback.
     """
+    parts: list[str] = []
     if pack.mcp_config.instructions:
-        return pack.mcp_config.instructions
-    if pack.description:
-        return pack.description
-    return (
-        f"{pack.name} ExpertPack knowledge service. "
-        f"Use ep_search to find domain expertise, ep_list_topics to browse pack structure, "
-        f"and ep_graph_traverse to explore knowledge graph connections."
+        parts.append(pack.mcp_config.instructions)
+    elif pack.description:
+        parts.append(pack.description)
+    else:
+        parts.append(f"{pack.name} ExpertPack knowledge service.")
+
+    parts.append(
+        "Consume loop: ep_search for candidate atom ids, then ep_read to load the "
+        "whole atom. requires: dependencies expand automatically on search. "
+        "Stop when the atom answers the question, or after 3 steps (hard cap 7). "
+        "Escalate only for multi-hop, contradiction, or a navigation miss. "
+        "Use ep_list_topics to browse structure and ep_graph_traverse for graph hops."
     )
+    boundary = pack.manifest.authority_boundary
+    if boundary is not None:
+        refuse = "; ".join(boundary.out_of_scope[:4]) if boundary.out_of_scope else "topics outside in_scope"
+        parts.append(
+            f"Authority: in scope — {boundary.in_scope} "
+            f"Refuse: {refuse}."
+        )
+        if boundary.no_source_no_claim:
+            parts.append("Do not assert a claim unless a retrieved atom supports it.")
+    return " ".join(parts)
 
 
 def create_pack_mcp(
@@ -93,13 +108,13 @@ def create_pack_mcp(
     graph_lookup: GraphLookup | None = None,
     query_log_path: str | None = None,
 ):
-    """Create a FastMCP instance with tools, resources, and prompts registered for a pack."""
-    from mcp.server.fastmcp import FastMCP
+    """Create an MCPServer instance with tools, resources, and prompts for a pack."""
+    from mcp.server.mcpserver import MCPServer
 
-    mcp = FastMCP(
-        name=f"ep-mcp-{slug}",
+    mcp = MCPServer(
+        f"ep-mcp-{slug}",
         instructions=_get_server_instructions(pack),
-        stateless_http=True,
+        version=pack.version,
     )
 
     @mcp.tool(
@@ -115,7 +130,7 @@ def create_pack_mcp(
         tags: list[str] | None = None,
         max_results: int = 10,
         reconstruct: bool = False,
-    ) -> str:
+    ) -> list | dict:
         """Search the ExpertPack for relevant domain expertise.
 
         Args:
@@ -128,24 +143,19 @@ def create_pack_mcp(
                 for verification/reconstruction (default false).
 
         Returns:
-            JSON array of ranked results with provenance metadata.
+            Ranked results with provenance metadata.
         """
         try:
-            results = await ep_search(
+            return await ep_search(
                 engine, query, type, tags, max_results,
                 query_log_path=query_log_path,
                 reconstruct=reconstruct,
             )
-            return json.dumps(results, indent=2)
         except Exception as e:
             logger.exception(
                 "ep_search_tool error | pack=%s query=%r", slug, query,
             )
-            return json.dumps({
-                "error": str(e),
-                "pack": slug,
-                "query": query,
-            })
+            return {"error": str(e), "pack": slug, "query": query}
 
     @mcp.tool(
         annotations={
@@ -156,23 +166,22 @@ def create_pack_mcp(
     )
     async def ep_list_topics_tool(
         type: str | None = None,
-    ) -> str:
+    ) -> dict:
         """List available topics and content structure in the ExpertPack.
 
         Args:
             type: Filter by content type. If omitted, returns all types.
 
         Returns:
-            JSON with pack metadata and grouped file listing.
+            Pack metadata and grouped file listing.
         """
         try:
-            result = ep_list_topics(pack, type)
-            return json.dumps(result, indent=2)
+            return ep_list_topics(pack, type)
         except Exception as e:
             logger.exception(
                 "ep_list_topics_tool error | pack=%s type=%s", slug, type,
             )
-            return json.dumps({"error": str(e), "pack": slug})
+            return {"error": str(e), "pack": slug}
 
     @mcp.tool(
         annotations={
@@ -185,7 +194,7 @@ def create_pack_mcp(
         file_path: str,
         depth: int = 1,
         edge_kinds: list[str] | None = None,
-    ) -> str:
+    ) -> dict:
         """Traverse the ExpertPack knowledge graph from a starting file.
 
         Explores connections between content files (concepts, workflows,
@@ -198,27 +207,55 @@ def create_pack_mcp(
                        If omitted, follows all edge types.
 
         Returns:
-            JSON with start node info, connected nodes, and traversal stats.
+            Start node info, connected nodes, and traversal stats.
         """
         try:
-            result = ep_graph_traverse(
+            return ep_graph_traverse(
                 pack=pack,
                 graph_lookup=graph_lookup,
                 file_path=file_path,
                 depth=depth,
                 edge_kinds=edge_kinds,
             )
-            return json.dumps(result, indent=2)
         except Exception as e:
             logger.exception(
                 "ep_graph_traverse_tool error | pack=%s file_path=%r",
                 slug, file_path,
             )
-            return json.dumps({
-                "error": str(e),
-                "pack": slug,
-                "file_path": file_path,
-            })
+            return {"error": str(e), "pack": slug, "file_path": file_path}
+
+    @mcp.tool(
+        annotations={
+            "readOnlyHint": True,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
+    )
+    async def ep_read_tool(
+        path: str | None = None,
+        id: str | None = None,
+        reconstruct: bool = False,
+    ) -> dict:
+        """Read a whole ExpertPack atom by path or provenance id.
+
+        Search hits are locators. Call this after ep_search to load the
+        complete atom (opening paragraph plus body), not a sidecar fragment.
+
+        Args:
+            path: Pack-relative file path (e.g. 'concepts/routing.md').
+            id: Provenance id (e.g. 'my-pack/concepts/routing').
+            reconstruct: Include original markdown and provenance block.
+
+        Returns:
+            Full atom content plus requires/activation metadata.
+        """
+        try:
+            return ep_read(pack, path=path, id=id, reconstruct=reconstruct)
+        except Exception as e:
+            logger.exception(
+                "ep_read_tool error | pack=%s path=%r id=%r", slug, path, id,
+            )
+            return {"error": str(e), "pack": slug, "path": path, "id": id}
 
     # Register resources (always-tier files, overview, manifest, additional declared)
     register_resources(mcp, pack)
@@ -285,18 +322,30 @@ def build_app(
 ) -> Starlette:
     """Build the Starlette ASGI application with pack routing.
 
-    Each pack's FastMCP app is mounted as a sub-application with its own
-    lifespan managed through the parent app's lifespan.
+    Each pack's MCPServer Streamable HTTP app is mounted as a sub-application
+    with its own lifespan managed through the parent app's lifespan.
     """
+    from mcp.server.transport_security import TransportSecuritySettings
+
     auth = APIKeyAuth()
     for pack_config in config.packs:
         if pack_config.api_keys:
             auth.add_pack_keys(pack_config.slug, pack_config.api_keys)
 
+    transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=list(config.mcp_allowed_hosts),
+        allowed_origins=list(config.mcp_allowed_origins),
+    )
+
     # Collect MCP session managers for lifespan management
     session_managers = []
     for slug, inst in pack_instances.items():
-        mcp_app = inst.mcp.streamable_http_app()
+        mcp_app = inst.mcp.streamable_http_app(
+            stateless_http=True,
+            transport_security=transport_security,
+            host=config.host,
+        )
         session_managers.append((slug, inst.mcp.session_manager, mcp_app))
 
     @asynccontextmanager

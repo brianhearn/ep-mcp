@@ -26,6 +26,11 @@ class Chunk:
     section_slug: str | None = None
     sidecar_chunk_id: str | None = None
     span_hash: str | None = None
+    indexed_content: str | None = None
+
+    def text_for_index(self) -> str:
+        """Text used for embed + BM25 (may include context_prefix)."""
+        return self.indexed_content if self.indexed_content is not None else self.content
 
 
 # Default token threshold for splitting (from ARCHITECTURE.md §4.2)
@@ -149,6 +154,8 @@ def _chunk_from_sidecar(
         content = embeddable_span(raw_span).strip("\n")
         if not content:
             continue
+        prefix = (sidecar_chunk.context_prefix or "").strip()
+        indexed = f"{prefix}\n\n{content}" if prefix else content
         chunks.append(
             Chunk(
                 file_path=file_path,
@@ -160,6 +167,7 @@ def _chunk_from_sidecar(
                 section_slug=section_slug_from_chunk(sidecar_chunk),
                 sidecar_chunk_id=sidecar_chunk.chunk_id or None,
                 span_hash=span_sha256(content),
+                indexed_content=indexed if prefix else None,
             )
         )
     return chunks

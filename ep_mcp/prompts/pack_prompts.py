@@ -22,7 +22,7 @@ def register_prompts(mcp, pack: Pack) -> None:
     """Register MCP Prompts for a pack.
 
     Args:
-        mcp: FastMCP server instance
+        mcp: MCPServer instance
         pack: Loaded Pack object
     """
     declarations = _resolve_prompt_declarations(pack)
@@ -65,8 +65,20 @@ def register_prompts(mcp, pack: Pack) -> None:
             get_prompt.__doc__ = f"Workflow prompt: {name}"
             return get_prompt
 
+        description = decl.description
+        if source_file.activation is not None:
+            bits = []
+            if source_file.activation.tools:
+                bits.append("tools: " + ", ".join(source_file.activation.tools))
+            if source_file.activation.constraints:
+                bits.append("constraints: " + ", ".join(source_file.activation.constraints))
+            if source_file.activation.next:
+                bits.append("next: " + ", ".join(source_file.activation.next))
+            if bits:
+                description = f"{description} [{'; '.join(bits)}]" if description else "; ".join(bits)
+
         try:
-            mcp.prompt(name=decl.name, description=decl.description)(
+            mcp.prompt(name=decl.name, description=description)(
                 _make_prompt_handler(source_file.content, decl.name)
             )
             registered += 1

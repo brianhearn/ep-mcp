@@ -30,10 +30,18 @@ def ep_list_topics(pack: Pack, type: str | None = None) -> dict:
         if file_type not in topics:
             topics[file_type] = []
 
-        topics[file_type].append({
+        entry = {
             "path": path,
             "title": file.title,
-        })
+            "retrieval_strategy": file.retrieval_strategy,
+        }
+        if file.activation is not None:
+            entry["activation"] = {
+                "tools": file.activation.tools,
+                "constraints": file.activation.constraints,
+                "next": file.activation.next,
+            }
+        topics[file_type].append(entry)
 
     # Pack metadata
     pack_info = {
@@ -44,6 +52,14 @@ def ep_list_topics(pack: Pack, type: str | None = None) -> dict:
         "description": pack.description,
         "file_count": len(pack.files),
     }
+    boundary = pack.manifest.authority_boundary
+    if boundary is not None:
+        pack_info["authority_boundary"] = {
+            "in_scope": boundary.in_scope,
+            "out_of_scope": boundary.out_of_scope,
+            "refuse_when": boundary.refuse_when,
+            "no_source_no_claim": boundary.no_source_no_claim,
+        }
 
     if pack.freshness:
         pack_info["freshness"] = {

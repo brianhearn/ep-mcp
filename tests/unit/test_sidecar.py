@@ -59,6 +59,7 @@ def sidecar_fixture(tmp_path: Path):
                 "chunk_order": 1,
                 "section": "First Section",
                 "line_range": [first_section_line, second_section_line - 1],
+                "context_prefix": "From Sample Workflow, section First Section.",
             },
             {
                 "chunk_id": "sample--second-section",
@@ -108,3 +109,23 @@ class TestSidecarChunking:
         assert chunks[1].line_range == sidecar.chunks[1].line_range
         assert "Section one content" in chunks[1].content
         assert chunks[1].span_hash == span_sha256(chunks[1].content)
+        assert chunks[1].indexed_content is not None
+        assert chunks[1].indexed_content.startswith("From Sample Workflow")
+        assert "Section one content" in chunks[1].indexed_content
+        assert not chunks[1].content.startswith("From Sample Workflow")
+        assert chunks[0].indexed_content is None
+
+    def test_prefix_does_not_change_span_hash(self, sidecar_fixture):
+        md_path, sidecar_path = sidecar_fixture
+        raw = md_path.read_text(encoding="utf-8")
+        content = raw.split("---", 2)[2].lstrip()
+        sidecar = load_sidecar(sidecar_path)
+        chunks = chunk_file(
+            "workflows/sample.md",
+            content,
+            "Sample Workflow",
+            raw_content=raw,
+            sidecar=sidecar,
+        )
+        assert chunks[1].span_hash == span_sha256(chunks[1].content)
+        assert chunks[1].text_for_index() != chunks[1].content

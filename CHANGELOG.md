@@ -7,8 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-08-17 — MCP SDK v2 + ExpertPack consumer contract
+
 ### Added
 
+- **MCP Python SDK v2** — `mcp[cli]>=2,<3`. `FastMCP` is now `MCPServer` (`mcp.server.mcpserver`). Dual-era: the same process serves 2026-07-28 and 2025-era clients. `stateless_http` and `TransportSecuritySettings` are passed to `streamable_http_app()`. Configurable `server.mcp_allowed_hosts` / `mcp_allowed_origins` prevent 421 Host-header rejections behind nginx.
+- **`ep_read` consume-loop tool** — load a whole atom by path or provenance id after `ep_search`. Server instructions encode search → read → stop (3 steps / hard cap 7).
+- **`context_prefix` at index time** — RFC-004 sidecar prefixes are prepended for embed + BM25 only; returned body and `span_hash` stay the original span. Existing indexes rebuild when `index_features` does not match `context_prefix_v1+nav_filter_v1`.
+- **Tier / navigation RAG filter** — navigation files (`retrieval_strategy` / `concept_scope`, `_index.md`, `source-coverage.md`) and `context.on_demand` are excluded from the vector/FTS pool. `ep_read` and resources still serve them.
+- **`authority_boundary`** — parsed from `manifest.yaml`, exposed as `ep://{slug}/authority` and in `ep_list_topics`.
+- **`activation:` frontmatter** — tools / constraints / next on workflow, decision, gotcha, and phase atoms; surfaced on `ep_read`, `ep_list_topics`, and prompt descriptions.
+- **On-demand file resource** — `ep://{slug}/file/{+path}` (RFC 6570 reserved expansion).
+- **stdio transport** — `ep-mcp serve --transport stdio` runs `MCPServer.run(transport="stdio")` for the first configured pack.
 - **RFC-004 chunk sidecar consumption** — the indexer now reads adjacent `<name>.chunks.yaml` sidecars (or a `chunks_sidecar:` frontmatter pointer) and uses their `line_range` / `chunk_order` boundaries instead of re-deriving splits at index time. Sidecar metadata (`section_slug`, `span_hash`, `sidecar_chunk_id`) is stored in SQLite for reconstruct mode.
 - **RFC-003 fragment provenance envelope** — `reconstruct=true` now returns `fragment_id`, `line_range`, `original_markdown`, span-level `content_hash`, `excerpt`, `stale`, and `[start, end]` `byte_offset` tuples matching the OpenClaw memory plugin contract. The legacy `original_span` / `provenance_block` fields remain for backward compatibility.
 - **Provenance confidence grade** — optional frontmatter `confidence` (`expert-verified` | `crawled` | `inferred`) is parsed at load time, stored on indexed chunks, and surfaced on search results / reconstruct envelopes.
@@ -29,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`POST /search` endpoint with caller-supplied query vector** — new `vector: list[float] | None` field on `SearchRequest` lets clients pass a pre-computed query embedding so the engine can skip its own `embed_query()` call. The HTTP layer validates the vector dimension against the pack's configured embedding provider (returns 400 on mismatch). Enables low-latency flows where the client has already embedded the query upstream (e.g. OpenClaw's memory plugin computing a single Gemini embedding and fanning out to multiple capabilities). `GET /search` is unchanged and still performs the embed server-side. The POST body mirrors the GET query params (`query`, `pack`, `n`, `type`, `tags`, plus optional `vector`, `graph_expansion_confidence_threshold`, `graph_expansion_min_score`) and the response includes `vector_supplied: bool` for client-side sanity checks. Verified on expertpack.ai/mcp: POST with a 3072-d Gemini query vector returns identical scores to GET.
 
 ### Changed
+
+- **MCP tool returns** — tools return lists/dicts (SDK wraps JSON text) instead of pre-serialized strings.
+- **Loader path keys** — pack file inventory always uses forward slashes.
+- **Package version** — `pyproject.toml` / `ep_mcp.__version__` aligned to 0.5.0.
 
 - **Vectorized MMR reranking** — `mmr_rerank()` now normalizes candidate embeddings once with NumPy and updates diversity scores via matrix-vector operations instead of recalculating Python generator-based cosine similarities for every candidate/selected pair. This fixes a severe latency cliff with 3072-d embeddings: MMR dropped from multi-second latency to roughly **30–90ms** per query in the Azure `text-embedding-3-large` test.
 
@@ -132,5 +146,6 @@ On the canonical ezt-designer eval (22 questions, 41 expected sources, direct `/
 
 **Initial release**: Vision → full working MCP server + production deployment in 3 days.
 
+[0.5.0]: https://github.com/brianhearn/ep-mcp/releases/tag/v0.5.0
 [0.4.0]: https://github.com/brianhearn/ep-mcp/releases/tag/v0.4.0
 [0.1.0]: https://github.com/brianhearn/ep-mcp/releases/tag/v0.1.0

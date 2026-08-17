@@ -1,9 +1,10 @@
 """MCP Resource registration for ExpertPack packs.
 
-Exposes three categories of resources:
+Exposes:
   1. Always-tier files — foundational context the agent reads at registration
   2. Additional declared resources — files from mcp.resources.additional
   3. On-demand file access — any pack file by URI template
+  4. Authority boundary — pack-level refusal contract
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ def register_resources(mcp, pack: Pack) -> None:
     """Register MCP Resources for a pack.
 
     Args:
-        mcp: FastMCP server instance
+        mcp: MCPServer instance
         pack: Loaded Pack object
     """
     slug = pack.slug
@@ -44,7 +45,24 @@ def register_resources(mcp, pack: Pack) -> None:
             slug, entry,
         )
 
-    # --- 3. Always-tier files ---
+    # --- 3. Authority boundary ---
+    @mcp.resource(f"ep://{slug}/authority")
+    async def get_authority() -> str:
+        """Pack authority boundary — what this pack may assert and must refuse."""
+        boundary = pack.manifest.authority_boundary
+        if boundary is None:
+            return json.dumps({"authority_boundary": None}, indent=2)
+        return json.dumps(
+            {
+                "in_scope": boundary.in_scope,
+                "out_of_scope": boundary.out_of_scope,
+                "refuse_when": boundary.refuse_when,
+                "no_source_no_claim": boundary.no_source_no_claim,
+            },
+            indent=2,
+        )
+
+    # --- 4. Always-tier files ---
     if pack.mcp_config.resources.include_always_tier:
         registered_always = 0
         for path in pack.always_tier:
@@ -53,10 +71,8 @@ def register_resources(mcp, pack: Pack) -> None:
             if path == entry:
                 continue  # already registered as /overview
 
-            # Capture path in closure
             def _make_always_handler(p: str):
                 async def get_always_file() -> str:
-                    f"""Always-tier file: {p}"""
                     return pack.files[p].raw_content
                 get_always_file.__doc__ = f"Always-tier context file: {p}"
                 return get_always_file
@@ -70,7 +86,7 @@ def register_resources(mcp, pack: Pack) -> None:
             slug, registered_always,
         )
 
-    # --- 4. Additional declared resources ---
+    # --- 5. Additional declared resources ---
     for path in pack.mcp_config.resources.additional:
         if path not in pack.files:
             logger.warning(
@@ -91,7 +107,7 @@ def register_resources(mcp, pack: Pack) -> None:
         mcp.resource(uri)(_make_additional_handler(path))
         logger.debug("Pack '%s': registered additional resource: %s", slug, path)
 
-    # --- 5. Legacy file listing (kept for backward compatibility) ---
+    # --- 6. Legacy file listing ---
     @mcp.resource(f"ep://{slug}/files")
     async def get_file_listing() -> str:
         """Full file listing with metadata for all pack files."""
@@ -105,5 +121,15 @@ def register_resources(mcp, pack: Pack) -> None:
                 "tokens": f.size_tokens,
                 "has_provenance": f.provenance.id is not None,
                 "in_always_tier": path in pack.always_tier,
+                "retrieval_strategy": f.retrieval_strategy,
             })
         return json.dumps(files, indent=2)
+
+    # --- 7. On-demand file access (RFC 6570 reserved expansion for slashes) ---
+    @mcp.resource(f"ep://{slug}/file/{{+path}}")
+    async def get_file(path: str) -> str:
+        """Read any pack file by path. Returns raw markdown including frontmatter."""
+        key = path.replace("\\", "/").lstrip("/")
+        if key not in pack.files:
+            raise ValueError(f"File not found in pack: {path}")
+        return pack.files[key].raw_content

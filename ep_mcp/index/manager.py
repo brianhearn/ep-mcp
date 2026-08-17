@@ -16,6 +16,10 @@ from .sqlite_store import SQLiteStore
 
 logger = logging.getLogger(__name__)
 
+# Bump when index-side contract changes (context_prefix, navigation filter).
+# Existing indexes with a different value are fully rebuilt.
+INDEX_FEATURES = "context_prefix_v1+nav_filter_v1"
+
 
 class IndexManager:
     """Manages the indexing pipeline for a single pack.
@@ -52,14 +56,23 @@ class IndexManager:
         stored_model = self.store.get_meta("embedding_model")
         current_model = self.provider.model_name
 
-        if stored_model and stored_model != current_model:
-            logger.info(
-                "Embedding model changed: %s → %s — full rebuild required",
-                stored_model, current_model,
+        stored_features = self.store.get_meta("index_features")
+        # None + existing chunks = pre-0.5 index that must rebuild for prefixes/nav filter.
+        features_changed = stored_features != INDEX_FEATURES and (
+            stored_features is not None or self.store.chunk_count() > 0
+        )
+        model_changed = bool(stored_model and stored_model != current_model)
+
+        if model_changed or features_changed:
+            reason = (
+                f"embedding model {stored_model} → {current_model}"
+                if model_changed
+                else f"index features {stored_features} → {INDEX_FEATURES}"
             )
+            logger.info("Full rebuild required (%s)", reason)
             stats.full_rebuild = True
-            self.store.invalidate_cache_for_model(stored_model)
-            # Clear all chunks to trigger full re-index
+            if model_changed:
+                self.store.invalidate_cache_for_model(stored_model)
             for file_path in self.store.get_indexed_files():
                 self.store.delete_file_chunks(file_path)
             self.store.commit()
@@ -67,12 +80,12 @@ class IndexManager:
         # Get current index state
         indexed_hashes = self.store.get_file_hashes()
         indexed_files = set(indexed_hashes.keys())
-        pack_files = set(self.pack.files.keys())
+        indexable_files = {fp for fp, f in self.pack.files.items() if f.is_indexable}
 
         # Determine what needs updating
-        new_files = pack_files - indexed_files
-        deleted_files = indexed_files - pack_files
-        existing_files = pack_files & indexed_files
+        new_files = indexable_files - indexed_files
+        deleted_files = indexed_files - indexable_files
+        existing_files = indexable_files & indexed_files
 
         # Check for changed content in existing files
         changed_files = set()
@@ -103,6 +116,7 @@ class IndexManager:
         self.store.set_meta("indexed_at", datetime.now(timezone.utc).isoformat())
         self.store.set_meta("file_count", str(self.store.file_count()))
         self.store.set_meta("chunk_count", str(self.store.chunk_count()))
+        self.store.set_meta("index_features", INDEX_FEATURES)
         self.store.commit()
 
         logger.info(
@@ -155,9 +169,10 @@ class IndexManager:
         chunk_embed_map: list[tuple[int, list[float] | None]] = []  # (index_in_all_chunks, cached_or_None)
 
         for i, chunk in enumerate(all_chunks):
-            # Compute content hash for this chunk's content
+            # Compute content hash for this chunk's index text (may include prefix)
             import hashlib
-            chunk_hash = hashlib.sha256(chunk.content.encode("utf-8")).hexdigest()
+            index_text = chunk.text_for_index()
+            chunk_hash = hashlib.sha256(index_text.encode("utf-8")).hexdigest()
 
             cached = self.store.get_cached_embedding(chunk_hash, self.provider.model_name)
             if cached:
@@ -165,7 +180,7 @@ class IndexManager:
                 stats.cache_hits += 1
             else:
                 chunk_embed_map.append((i, None))
-                texts_to_embed.append(chunk.content)
+                texts_to_embed.append(index_text)
                 stats.cache_misses += 1
 
         # Step 3: Embed uncached texts
@@ -188,7 +203,7 @@ class IndexManager:
                 embedding = next(embed_iter)
                 # Cache the new embedding
                 import hashlib
-                chunk_hash = hashlib.sha256(chunk.content.encode("utf-8")).hexdigest()
+                chunk_hash = hashlib.sha256(chunk.text_for_index().encode("utf-8")).hexdigest()
                 self.store.cache_embedding(chunk_hash, self.provider.model_name, embedding)
 
             pack_file = self.pack.files[chunk.file_path]
@@ -215,6 +230,7 @@ class IndexManager:
                 sidecar_chunk_id=chunk.sidecar_chunk_id,
                 span_hash=chunk.span_hash,
                 confidence=pack_file.provenance.confidence,
+                indexed_content=chunk.indexed_content,
             )
 
         stats.total_chunks = self.store.chunk_count()

@@ -18,6 +18,27 @@ class Provenance(BaseModel):
     )
 
 
+class Activation(BaseModel):
+    """Optional knowledge-activation block on operational atoms."""
+
+    tools: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    next: list[str] = Field(default_factory=list)
+
+
+class AuthorityBoundary(BaseModel):
+    """Pack-level refusal contract from manifest.yaml."""
+
+    in_scope: str = ""
+    out_of_scope: list[str] = Field(default_factory=list)
+    refuse_when: list[str] = Field(default_factory=list)
+    no_source_no_claim: bool = False
+
+
+_NAV_BASENAMES = frozenset({"_index.md", "source-coverage.md"})
+_OPERATIONAL_TYPES = frozenset({"workflow", "decision", "gotcha", "phase"})
+
+
 class PackFile(BaseModel):
     """A single content file within an ExpertPack."""
 
@@ -29,15 +50,40 @@ class PackFile(BaseModel):
     tags: list[str] = Field(default_factory=list)
     provenance: Provenance = Field(default_factory=Provenance)
     retrieval_strategy: str = Field(
-        "standard", description="standard | always | on_demand | atomic"
+        "standard",
+        description="standard | always | on_demand | atomic | navigation",
+    )
+    concept_scope: str | None = Field(
+        None, description="single | reference | multi | navigation"
     )
     requires: list[str] = Field(
         default_factory=list,
         description="Atomic-conceptual: paths of atoms that should auto-expand when this atom is retrieved. Directional (A requires B does not imply B requires A).",
     )
+    activation: Activation | None = Field(
+        None,
+        description="Optional tools/constraints/next on operational atoms",
+    )
     content: str = Field("", description="Markdown content, frontmatter stripped")
     raw_content: str = Field("", description="Full markdown content with frontmatter")
     size_tokens: int = Field(0, description="Approximate token count")
+
+    @property
+    def is_indexable(self) -> bool:
+        """Whether this file belongs in the RAG (vector + FTS) pool."""
+        posix = self.path.replace("\\", "/")
+        basename = posix.rsplit("/", 1)[-1]
+        if basename in _NAV_BASENAMES or posix.endswith("meta/source-coverage.md"):
+            return False
+        if self.retrieval_strategy in {"navigation", "on_demand"}:
+            return False
+        if self.concept_scope == "navigation":
+            return False
+        return True
+
+    @property
+    def is_operational(self) -> bool:
+        return (self.type or "") in _OPERATIONAL_TYPES
 
 
 class FreshnessMetadata(BaseModel):
@@ -104,6 +150,7 @@ class Manifest(BaseModel):
     context: ContextTiers = Field(default_factory=ContextTiers)
     freshness: FreshnessMetadata = Field(default_factory=FreshnessMetadata)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
+    authority_boundary: AuthorityBoundary | None = None
     raw: dict = Field(default_factory=dict, description="Full parsed YAML for passthrough")
 
 

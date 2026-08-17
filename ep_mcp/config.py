@@ -192,6 +192,25 @@ class ServerConfig(BaseModel):
     # Example: query_log_path: "/var/log/ep-mcp-queries.jsonl"
     query_log_path: str | None = None
 
+    # MCP Streamable HTTP DNS-rebinding allowlists (SDK v2).
+    # Host headers often include a port — include both bare and `host:*` forms.
+    mcp_allowed_hosts: list[str] = Field(
+        default_factory=lambda: [
+            "localhost",
+            "localhost:*",
+            "127.0.0.1",
+            "127.0.0.1:*",
+            "expertpack.ai",
+            "expertpack.ai:*",
+        ]
+    )
+    mcp_allowed_origins: list[str] = Field(
+        default_factory=lambda: [
+            "https://expertpack.ai",
+            "https://claude.ai",
+        ]
+    )
+
 
 def load_config(config_path: str | Path) -> ServerConfig:
     """Load server configuration from a YAML file.
@@ -244,6 +263,12 @@ def load_config(config_path: str | Path) -> ServerConfig:
         log_level=server_raw.get("log_level", "info"),
         dev_mode_watch=server_raw.get("dev_mode_watch", False),
         query_log_path=server_raw.get("query_log_path"),
+        mcp_allowed_hosts=list(server_raw["mcp_allowed_hosts"])
+        if server_raw.get("mcp_allowed_hosts") is not None
+        else ServerConfig().mcp_allowed_hosts,
+        mcp_allowed_origins=list(server_raw["mcp_allowed_origins"])
+        if server_raw.get("mcp_allowed_origins") is not None
+        else ServerConfig().mcp_allowed_origins,
         packs=packs,
         embedding=embedding,
         retrieval=retrieval,

@@ -169,7 +169,7 @@ class TestLoadPack:
 
     def test_index_path(self, pack_dir):
         pack = load_pack(pack_dir)
-        assert pack.index_path.endswith(".ep-mcp/index.db")
+        assert pack.index_path.replace("\\", "/").endswith(".ep-mcp/index.db")
 
     def test_graph_loaded(self, pack_with_graph):
         pack = load_pack(pack_with_graph)
@@ -207,6 +207,43 @@ class TestLoadPack:
         (git_dir / "config.md").write_text("# Git config")
         pack = load_pack(pack_dir)
         assert ".git/config.md" not in pack.files
+
+    def test_posix_path_keys(self, pack_dir):
+        pack = load_pack(pack_dir)
+        for key in pack.files:
+            assert "\\" not in key
+
+    def test_activation_and_navigation(self, pack_dir):
+        workflows = pack_dir / "workflows"
+        workflows.mkdir()
+        (workflows / "build.md").write_text(
+            """---
+type: workflow
+activation:
+  tools: [search]
+  next: [concepts/topic-a.md]
+---
+# Build
+Steps.
+""",
+            encoding="utf-8",
+        )
+        (pack_dir / "concepts" / "_index.md").write_text(
+            """---
+type: concept
+retrieval_strategy: navigation
+---
+# Index
+Nav only.
+""",
+            encoding="utf-8",
+        )
+        pack = load_pack(pack_dir)
+        wf = pack.files["workflows/build.md"]
+        assert wf.activation is not None
+        assert wf.activation.tools == ["search"]
+        assert pack.files["concepts/_index.md"].retrieval_strategy == "navigation"
+        assert pack.files["concepts/_index.md"].is_indexable is False
 
     def test_skips_obsidian_dir(self, pack_dir):
         obs_dir = pack_dir / ".obsidian"
