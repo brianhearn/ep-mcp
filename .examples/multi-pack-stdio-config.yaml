@@ -1,0 +1,53 @@
+# Example configuration for multi-pack stdio transport
+# Usage: ep-mcp serve --config multi-pack-stdio-config.yaml --transport stdio
+
+server:
+  host: "127.0.0.1"
+  port: 8000
+  log_level: "info"
+
+# Multiple packs configuration
+# All packs are accessible via a single stdio process
+# Tools require a 'pack' parameter to route to the correct pack
+packs:
+  - slug: "pack-alpha"
+    path: "/path/to/pack-alpha"
+    api_keys:
+      - "your-api-key-for-alpha"
+
+  - slug: "pack-beta"
+    path: "/path/to/pack-beta"
+    api_keys:
+      - "your-api-key-for-beta"
+
+  - slug: "pack-gamma"
+    path: "/path/to/pack-gamma"
+
+embedding:
+  provider: "gemini"
+  model: "gemini-embedding-001"
+
+retrieval:
+  vector_weight: 0.7
+  text_weight: 0.3
+  mmr_enabled: true
+  adaptive_threshold: true
+
+# Example MCP tool calls with multi-pack routing:
+#
+# Search in pack-alpha:
+#   ep_search_tool(query="routing", pack="pack-alpha", max_results=10)
+#
+# Read from pack-beta:
+#   ep_read_tool(pack="pack-beta", path="concepts/overview.md")
+#
+# List topics in pack-gamma:
+#   ep_list_topics_tool(pack="pack-gamma", type="concept")
+#
+# Invalid pack returns error:
+#   ep_search_tool(query="test", pack="invalid-pack")
+#   => {"error": "Unknown pack: 'invalid-pack'. Available packs: pack-alpha, pack-beta, pack-gamma"}
+#
+# Missing pack parameter returns error:
+#   ep_search_tool(query="test")
+#   => {"error": "Missing required parameter 'pack'. Available packs: pack-alpha, pack-beta, pack-gamma"}

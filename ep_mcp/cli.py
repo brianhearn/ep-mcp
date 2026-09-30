@@ -84,16 +84,24 @@ def serve(config_path: str, transport: str) -> None:
         return pack_instances
 
     if transport == "stdio":
-        if len(config.packs) > 1:
+        instances = asyncio.run(_load_instances())
+        from .server import create_multi_pack_mcp
+        
+        multi_mcp = create_multi_pack_mcp(instances, query_log_path=config.query_log_path)
+        
+        if len(config.packs) == 1:
             click.echo(
-                "stdio serves the first configured pack only "
-                f"({config.packs[0].slug})",
+                f"Starting stdio MCP server for pack '{config.packs[0].slug}'",
                 err=True,
             )
-        instances = asyncio.run(_load_instances())
-        first = instances[config.packs[0].slug]
-        click.echo(f"Starting stdio MCP server for pack '{first.pack.slug}'", err=True)
-        first.mcp.run(transport="stdio")
+        else:
+            click.echo(
+                f"Starting multi-pack stdio MCP server with {len(config.packs)} packs: "
+                f"{', '.join(p.slug for p in config.packs)}",
+                err=True,
+            )
+        
+        multi_mcp.run(transport="stdio")
         return
 
     async def _startup():

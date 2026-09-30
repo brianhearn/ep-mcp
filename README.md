@@ -32,12 +32,14 @@ An MCP server that turns any ExpertPack into a live, queryable knowledge service
   - `ep_read` — load a whole atom by path or provenance id (consume-loop step 2)
   - `ep_list_topics` — browse pack structure and available content types
   - `ep_graph_traverse`
+  - **Multi-pack stdio support**: All tools accept a `pack` parameter for routing when multiple packs are configured. Single-pack configs make `pack` optional (defaults to the only configured pack).
 - **Resources**:
   - `ep://{slug}/manifest`
   - `ep://{slug}/authority`
   - `ep://{slug}/files`
   - `ep://{slug}/file/{+path}` (raw content with frontmatter)
 - **Transports**: Streamable HTTP (primary, cloud-ready), stdio (local dev)
+  - **stdio multi-pack support (0.6.0+)**: When using `--transport stdio` with multiple packs configured, all tools accept an optional `pack` parameter (slug string) to specify which pack to query. For single-pack configurations, the `pack` parameter is optional and defaults to the only configured pack. This allows MCP hosts (Cursor, Claude Desktop) to use a single stdio process for multiple packs instead of requiring one process per pack.
 - **HTTP endpoint**: `GET /search` (for non-MCP HTTP clients)
 - **Auth**: API key (Phase 1), designed for OAuth 2.1 (Phase 2)
 
