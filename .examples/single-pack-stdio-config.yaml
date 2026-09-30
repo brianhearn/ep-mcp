@@ -1,0 +1,38 @@
+# Example configuration for single-pack stdio transport
+# Usage: ep-mcp serve --config single-pack-stdio-config.yaml --transport stdio
+#
+# With a single pack, the 'pack' parameter is OPTIONAL and defaults to the only configured pack.
+# This ensures backward compatibility with existing 0.5.0 configurations.
+
+server:
+  host: "127.0.0.1"
+  port: 8000
+  log_level: "info"
+
+# Single pack configuration
+# The 'pack' parameter is optional in tool calls
+packs:
+  - slug: "my-pack"
+    path: "/path/to/my-pack"
+    api_keys:
+      - "your-api-key"
+
+embedding:
+  provider: "gemini"
+  model: "gemini-embedding-001"
+
+retrieval:
+  vector_weight: 0.7
+  text_weight: 0.3
+  mmr_enabled: true
+  adaptive_threshold: true
+
+# Example MCP tool calls - pack parameter is OPTIONAL:
+#
+# Without pack parameter (defaults to "my-pack"):
+#   ep_search_tool(query="routing", max_results=10)
+#
+# With explicit pack parameter (also works):
+#   ep_search_tool(query="routing", pack="my-pack", max_results=10)
+#
+# Both forms produce identical results for single-pack configs.
