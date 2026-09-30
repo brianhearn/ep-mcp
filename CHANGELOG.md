@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-09-30 — Multi-pack stdio transport support
+
+### Added
+
+- **Multi-pack stdio transport** — `ep-mcp serve --transport stdio` now supports multiple packs in a single process. All MCP tools (`ep_search`, `ep_read`, `ep_list_topics`, `ep_graph_traverse`) accept an optional `pack` parameter (slug string) to route calls to the correct pack's retrieval engine. When only one pack is configured, the `pack` parameter is optional and defaults to that pack for backward compatibility. Previously, stdio transport only served the first configured pack and warned about the rest, requiring MCP hosts (Cursor, Claude Desktop, Grok Bot) to run one process per pack. Multi-pack stdio enables a single stdio process to serve all configured packs with explicit routing.
+- **`create_multi_pack_mcp()` in `server.py`** — new server factory function that creates an MCPServer with multi-pack routing for stdio transport. Validates pack slugs and returns clear error messages listing available packs when an invalid or missing pack parameter is provided.
+- **Test coverage for multi-pack stdio** — comprehensive test suite (`tests/unit/test_multi_pack_stdio.py`) covering multi-pack routing, single-pack default behavior, invalid pack errors, and missing pack parameter errors for all tools.
+
+### Changed
+
+- **stdio transport in `cli.py`** — updated to use `create_multi_pack_mcp()` instead of serving only the first pack. Console output now indicates whether a single pack or multi-pack stdio server is starting and lists all available pack slugs.
+
 ## [0.5.0] — 2026-08-17 — MCP SDK v2 + ExpertPack consumer contract
 
 ### Added

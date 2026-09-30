@@ -266,6 +266,243 @@ def create_pack_mcp(
     return mcp
 
 
+def create_multi_pack_mcp(
+    pack_instances: dict[str, PackInstance],
+    query_log_path: str | None = None,
+):
+    """Create an MCPServer with multi-pack routing for stdio transport.
+    
+    Tools accept a 'pack' argument (slug string) and route to the appropriate
+    pack instance. If only one pack is configured, 'pack' is optional and defaults
+    to that single pack.
+    
+    Args:
+        pack_instances: Dict of slug -> PackInstance
+        query_log_path: Optional query logging path
+        
+    Returns:
+        MCPServer configured for multi-pack stdio operation
+    """
+    from mcp.server.mcpserver import MCPServer
+    
+    # Determine if we have a single-pack configuration for default behavior
+    single_pack_slug = list(pack_instances.keys())[0] if len(pack_instances) == 1 else None
+    available_slugs = sorted(pack_instances.keys())
+    
+    # Build server instructions that reference all packs
+    if single_pack_slug:
+        inst = pack_instances[single_pack_slug]
+        instructions = _get_server_instructions(inst.pack)
+    else:
+        instructions = (
+            f"Multi-pack ExpertPack MCP server. Available packs: {', '.join(available_slugs)}. "
+            "All tools require a 'pack' parameter to specify which pack to query. "
+            "Consume loop: ep_search for candidate atom ids, then ep_read to load the "
+            "whole atom. requires: dependencies expand automatically on search. "
+            "Stop when the atom answers the question, or after 3 steps (hard cap 7). "
+            "Use ep_list_topics to browse structure and ep_graph_traverse for graph hops."
+        )
+    
+    mcp = MCPServer(
+        "ep-mcp-multi",
+        instructions=instructions,
+        version="0.6.0",
+    )
+    
+    def _resolve_pack(pack: str | None) -> tuple[str, PackInstance] | tuple[None, str]:
+        """Resolve pack slug to instance, handling optional default for single-pack configs.
+        
+        Returns:
+            (slug, instance) on success, or (None, error_message) on failure
+        """
+        if pack is None:
+            if single_pack_slug:
+                return single_pack_slug, pack_instances[single_pack_slug]
+            return None, f"Missing required parameter 'pack'. Available packs: {', '.join(available_slugs)}"
+        
+        if pack not in pack_instances:
+            return None, f"Unknown pack: {pack!r}. Available packs: {', '.join(available_slugs)}"
+        
+        return pack, pack_instances[pack]
+
+    @mcp.tool(
+        annotations={
+            "readOnlyHint": True,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
+    )
+    async def ep_search_tool(
+        query: str,
+        pack: str | None = None,
+        type: str | None = None,
+        tags: list[str] | None = None,
+        max_results: int = 10,
+        reconstruct: bool = False,
+    ) -> list | dict:
+        """Search an ExpertPack for relevant domain expertise.
+
+        Args:
+            query: Natural language search query.
+            pack: Pack slug to query. Required when multiple packs are configured.
+            type: Filter by content type (concept, workflow, reference,
+                  troubleshooting, faq, specification, etc.)
+            tags: Filter by content tags. Results must match at least one.
+            max_results: Maximum results to return (1-50, default 10).
+            reconstruct: Include original markdown spans and provenance blocks
+                for verification/reconstruction (default false).
+
+        Returns:
+            Ranked results with provenance metadata.
+        """
+        slug, inst_or_error = _resolve_pack(pack)
+        if slug is None:
+            return {"error": inst_or_error}
+        
+        inst = inst_or_error
+        try:
+            return await ep_search(
+                inst.engine, query, type, tags, max_results,
+                query_log_path=query_log_path,
+                reconstruct=reconstruct,
+            )
+        except Exception as e:
+            logger.exception(
+                "ep_search_tool error | pack=%s query=%r", slug, query,
+            )
+            return {"error": str(e), "pack": slug, "query": query}
+
+    @mcp.tool(
+        annotations={
+            "readOnlyHint": True,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
+    )
+    async def ep_list_topics_tool(
+        pack: str | None = None,
+        type: str | None = None,
+    ) -> dict:
+        """List available topics and content structure in an ExpertPack.
+
+        Args:
+            pack: Pack slug to query. Required when multiple packs are configured.
+            type: Filter by content type. If omitted, returns all types.
+
+        Returns:
+            Pack metadata and grouped file listing.
+        """
+        slug, inst_or_error = _resolve_pack(pack)
+        if slug is None:
+            return {"error": inst_or_error}
+        
+        inst = inst_or_error
+        try:
+            return ep_list_topics(inst.pack, type)
+        except Exception as e:
+            logger.exception(
+                "ep_list_topics_tool error | pack=%s type=%s", slug, type,
+            )
+            return {"error": str(e), "pack": slug}
+
+    @mcp.tool(
+        annotations={
+            "readOnlyHint": True,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
+    )
+    async def ep_graph_traverse_tool(
+        file_path: str,
+        pack: str | None = None,
+        depth: int = 1,
+        edge_kinds: list[str] | None = None,
+    ) -> dict:
+        """Traverse the ExpertPack knowledge graph from a starting file.
+
+        Explores connections between content files (concepts, workflows,
+        references, etc.) through the pack's knowledge graph.
+
+        Args:
+            file_path: Starting file path (e.g. 'concepts/auto-build.md').
+            pack: Pack slug to query. Required when multiple packs are configured.
+            depth: Number of hops to follow (1-3, default 1).
+            edge_kinds: Filter by edge types (wikilink, related, context).
+                       If omitted, follows all edge types.
+
+        Returns:
+            Start node info, connected nodes, and traversal stats.
+        """
+        slug, inst_or_error = _resolve_pack(pack)
+        if slug is None:
+            return {"error": inst_or_error}
+        
+        inst = inst_or_error
+        graph_lookup = GraphLookup.from_pack(inst.pack) if inst.pack.graph else None
+        try:
+            return ep_graph_traverse(
+                pack=inst.pack,
+                graph_lookup=graph_lookup,
+                file_path=file_path,
+                depth=depth,
+                edge_kinds=edge_kinds,
+            )
+        except Exception as e:
+            logger.exception(
+                "ep_graph_traverse_tool error | pack=%s file_path=%r",
+                slug, file_path,
+            )
+            return {"error": str(e), "pack": slug, "file_path": file_path}
+
+    @mcp.tool(
+        annotations={
+            "readOnlyHint": True,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
+    )
+    async def ep_read_tool(
+        pack: str | None = None,
+        path: str | None = None,
+        id: str | None = None,
+        reconstruct: bool = False,
+    ) -> dict:
+        """Read a whole ExpertPack atom by path or provenance id.
+
+        Search hits are locators. Call this after ep_search to load the
+        complete atom (opening paragraph plus body), not a sidecar fragment.
+
+        Args:
+            pack: Pack slug to query. Required when multiple packs are configured.
+            path: Pack-relative file path (e.g. 'concepts/routing.md').
+            id: Provenance id (e.g. 'my-pack/concepts/routing').
+            reconstruct: Include original markdown and provenance block.
+
+        Returns:
+            Full atom content plus requires/activation metadata.
+        """
+        slug, inst_or_error = _resolve_pack(pack)
+        if slug is None:
+            return {"error": inst_or_error}
+        
+        inst = inst_or_error
+        try:
+            return ep_read(inst.pack, path=path, id=id, reconstruct=reconstruct)
+        except Exception as e:
+            logger.exception(
+                "ep_read_tool error | pack=%s path=%r id=%r", slug, path, id,
+            )
+            return {"error": str(e), "pack": slug, "path": path, "id": id}
+
+    # Register resources and prompts for each pack
+    # Note: Resources use URI templates and can encode pack in the URI itself
+    for slug, inst in pack_instances.items():
+        register_resources(mcp, inst.pack)
+        register_prompts(mcp, inst.pack)
+
+    return mcp
+
+
 async def init_pack(
     slug: str,
     pack_path: str,
