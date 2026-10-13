@@ -7,10 +7,16 @@ name = "ep-mcp"
 version = "0.6.0"
 description = "ExpertPack MCP Server — expertise-as-a-service over MCP"
 readme = "README.md"
-license = "MIT"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [
     { name = "Brian Hearn", email = "brian@easyterritory.com" },
+]
+
+keywords = ["mcp", "model-context-protocol", "expertpack", "rag", "knowledge"]
+classifiers = [
+    "Programming Language :: Python :: 3",
 ]
 
 dependencies = [
@@ -34,6 +40,10 @@ dev = [
     "pytest-asyncio>=0.23",
     "ruff>=0.4",
 ]
+
+[project.urls]
+Homepage = "https://expertpack.ai"
+Repository = "https://github.com/brianhearn/ep-mcp"
 
 [project.scripts]
 ep-mcp = "ep_mcp.cli:cli"

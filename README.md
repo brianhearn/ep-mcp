@@ -1,5 +1,7 @@
 # ep-mcp
 
+<!-- mcp-name: io.github.brianhearn/ep-mcp -->
+
 **Expertise-as-a-Service over the Model Context Protocol.**
 
 An MCP server that turns any ExpertPack into a live, queryable knowledge service. Any MCP-compatible agent (Claude Desktop, Cursor, Windsurf, Claude.ai, custom hosts) can connect and retrieve high-quality, provenance-rich domain expertise via standardized tools.

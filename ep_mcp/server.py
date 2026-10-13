@@ -118,7 +118,9 @@ def create_pack_mcp(
     )
 
     @mcp.tool(
+        title="Search ExpertPack",
         annotations={
+            "title": "Search ExpertPack",
             "readOnlyHint": True,
             "idempotentHint": True,
             "openWorldHint": False,
@@ -158,7 +160,9 @@ def create_pack_mcp(
             return {"error": str(e), "pack": slug, "query": query}
 
     @mcp.tool(
+        title="List ExpertPack Topics",
         annotations={
+            "title": "List ExpertPack Topics",
             "readOnlyHint": True,
             "idempotentHint": True,
             "openWorldHint": False,
@@ -184,7 +188,9 @@ def create_pack_mcp(
             return {"error": str(e), "pack": slug}
 
     @mcp.tool(
+        title="Traverse ExpertPack Graph",
         annotations={
+            "title": "Traverse ExpertPack Graph",
             "readOnlyHint": True,
             "idempotentHint": True,
             "openWorldHint": False,
@@ -225,7 +231,9 @@ def create_pack_mcp(
             return {"error": str(e), "pack": slug, "file_path": file_path}
 
     @mcp.tool(
+        title="Read ExpertPack File",
         annotations={
+            "title": "Read ExpertPack File",
             "readOnlyHint": True,
             "idempotentHint": True,
             "openWorldHint": False,
