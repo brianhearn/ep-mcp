@@ -1,0 +1,28 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.brianhearn/ep-mcp",
+  "title": "ExpertPack MCP",
+  "description": "Serve ExpertPack knowledge packs over MCP with hybrid search, graph traversal and provenance.",
+  "repository": { "url": "https://github.com/brianhearn/ep-mcp", "source": "github" },
+  "websiteUrl": "https://expertpack.ai",
+  "version": "0.6.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "ep-mcp",
+      "version": "0.6.0",
+      "runtimeHint": "uvx",
+      "transport": { "type": "stdio" },
+      "packageArguments": [
+        { "type": "positional", "value": "serve" },
+        { "type": "named", "name": "--config", "description": "Path to an ep-mcp config YAML listing your ExpertPacks", "isRequired": true, "format": "filepath" },
+        { "type": "named", "name": "--transport", "value": "stdio" }
+      ],
+      "environmentVariables": [
+        { "name": "GEMINI_API_KEY", "description": "Gemini API key for embeddings (or set AZURE_OPENAI_API_KEY when using Azure OpenAI)", "isRequired": false, "isSecret": true },
+        { "name": "AZURE_OPENAI_API_KEY", "description": "Azure OpenAI key, if the config uses the Azure embedding provider", "isRequired": false, "isSecret": true }
+      ]
+    }
+  ]
+}

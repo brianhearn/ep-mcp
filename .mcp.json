@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "ep-mcp": {
+      "command": "uvx",
+      "args": ["ep-mcp", "serve", "--config", "/path/to/ep-mcp-config.yaml", "--transport", "stdio"],
+      "env": { "GEMINI_API_KEY": "${GEMINI_API_KEY}" }
+    }
+  }
+}
