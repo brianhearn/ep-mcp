@@ -26,4 +26,5 @@ ep-mcp serves one or more ExpertPacks (folders of Markdown knowledge) over MCP v
 }
 ```
 4. Restart the MCP client. The first start indexes the pack and may take a minute.
-5. Verify: the tools `ep_search`, `ep_read`, `ep_list_topics`, and `ep_graph_traverse` appear. Try `ep_list_topics`.
+5. Optional (ep-mcp 0.7.0+): if the host supports MCP Skills, set `skills_enabled: true` on the pack in the config (or `mcp.skills.enabled: true` in the pack's manifest) to expose the pack as a skill at `skill://<slug>/SKILL.md`. The `ep_*` tools remain the primary interface.
+6. Verify: the tools `ep_search`, `ep_read`, `ep_list_topics`, and `ep_graph_traverse` appear. Try `ep_list_topics`.

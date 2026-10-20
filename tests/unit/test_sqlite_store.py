@@ -221,3 +221,24 @@ class TestSQLiteStore:
 
     def test_get_chunks_by_ids_empty(self, store):
         assert store.get_chunks_by_ids([]) == {}
+
+
+def test_heading_path_round_trip(tmp_path):
+    """0.7.0: heading_path is stored as JSON and surfaces on SearchResult."""
+    from ep_mcp.index.sqlite_store import SQLiteStore
+    from ep_mcp.retrieval.engine import _search_result_from_chunk
+
+    store = SQLiteStore(str(tmp_path / "i.db"), embedding_dimension=4)
+    store.open()
+    cid = store.upsert_chunk(
+        file_path="a.md", chunk_index=1, content="### Ports\nP.", title="Guide", type_="concept",
+        tags=[], pack_slug="p", prov_id=None, content_hash=None, verified_at=None, verified_by=None,
+        token_count=3, embedding=[0.1, 0.2, 0.3, 0.4], line_start=10, line_end=11,
+        heading_path=["Guide", "Setup", "Ports"],
+    )
+    store.commit()
+    row = store.get_chunk(cid) if hasattr(store, "get_chunk") else store.get_chunks_by_ids([cid])[cid]
+    res = _search_result_from_chunk(dict(row), 0.5)
+    assert res.heading_path == ["Guide", "Setup", "Ports"]
+    assert res.line_range == (10, 11)
+    store.close()

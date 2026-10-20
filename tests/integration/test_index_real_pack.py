@@ -23,9 +23,6 @@ from ep_mcp.index.sqlite_store import SQLiteStore
 from ep_mcp.pack.loader import load_pack
 
 
-def pytest_addoption(parser):
-    parser.addoption("--pack", action="store", default=None, help="Path to ExpertPack")
-
 
 @pytest.fixture
 def pack_path(request):
@@ -62,7 +59,8 @@ class TestIndexRealPack:
 
                 print(f"Index stats: {stats}")
                 assert stats.total_chunks > 0
-                assert stats.new_files == len(pack.files)
+                # 0.5.0+: navigation / on_demand files are not indexed
+                assert stats.new_files == sum(1 for f in pack.files.values() if f.is_indexable)
                 assert stats.cache_misses > 0
 
                 # Verify search works
@@ -74,7 +72,12 @@ class TestIndexRealPack:
                 assert len(vec_results) > 0
                 print(f"Vector search returned {len(vec_results)} results")
 
-                bm25_results = store.bm25_search("territory", limit=5)
+                # Pack-agnostic lexical probe: a word from the first indexed title.
+                probe = next(
+                    w for f in pack.files.values() if f.is_indexable and f.title
+                    for w in f.title.split() if w.isalpha() and len(w) > 3
+                )
+                bm25_results = store.bm25_search(probe, limit=5)
                 assert len(bm25_results) > 0
                 print(f"BM25 search returned {len(bm25_results)} results")
 

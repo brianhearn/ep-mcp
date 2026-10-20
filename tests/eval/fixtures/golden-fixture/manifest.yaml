@@ -1,0 +1,5 @@
+slug: golden-fixture
+name: Golden Fixture
+type: product
+version: "1.0.0"
+description: Tiny pack used by the golden-eval harness self-test.

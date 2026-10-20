@@ -160,6 +160,7 @@ class SQLiteStore:
             ("span_hash", "TEXT"),
             ("confidence", "TEXT"),
             ("indexed_content", "TEXT"),
+            ("heading_path", "TEXT"),
         ):
             try:
                 c = self.conn
@@ -192,10 +193,12 @@ class SQLiteStore:
         span_hash: str | None = None,
         confidence: str | None = None,
         indexed_content: str | None = None,
+        heading_path: list[str] | None = None,
     ) -> int:
         """Insert or update a chunk. Returns the chunk row id."""
         c = self.conn
         tags_json = json.dumps(tags) if tags else "[]"
+        heading_json = json.dumps(heading_path) if heading_path is not None else None
 
         # Check if chunk exists
         row = c.execute(
@@ -212,12 +215,12 @@ class SQLiteStore:
                     verified_at = ?, verified_by = ?, token_count = ?,
                     line_start = ?, line_end = ?, section_slug = ?,
                     sidecar_chunk_id = ?, span_hash = ?, confidence = ?,
-                    indexed_content = ?
+                    indexed_content = ?, heading_path = ?
                 WHERE id = ?""",
                 (content, title, type_, tags_json, pack_slug, prov_id,
                  content_hash, verified_at, verified_by, token_count,
                  line_start, line_end, section_slug, sidecar_chunk_id,
-                 span_hash, confidence, indexed_content, chunk_id),
+                 span_hash, confidence, indexed_content, heading_json, chunk_id),
             )
             # Update vector
             if embedding:
@@ -232,12 +235,12 @@ class SQLiteStore:
                     (file_path, chunk_index, content, title, type, tags,
                      pack_slug, prov_id, content_hash, verified_at, verified_by,
                      token_count, line_start, line_end, section_slug,
-                     sidecar_chunk_id, span_hash, confidence, indexed_content)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                     sidecar_chunk_id, span_hash, confidence, indexed_content, heading_path)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (file_path, chunk_index, content, title, type_, tags_json,
                  pack_slug, prov_id, content_hash, verified_at, verified_by,
                  token_count, line_start, line_end, section_slug,
-                 sidecar_chunk_id, span_hash, confidence, indexed_content),
+                 sidecar_chunk_id, span_hash, confidence, indexed_content, heading_json),
             )
             chunk_id = cursor.lastrowid
             # Insert vector

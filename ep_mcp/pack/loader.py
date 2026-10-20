@@ -175,6 +175,9 @@ def _inventory_files(pack_path: Path, manifest) -> dict[str, PackFile]:
             concept_scope=concept_scope,
             requires=_ensure_list(frontmatter.get("requires", [])),
             activation=activation,
+            expires_at=_opt_str(frontmatter.get("expires_at")),
+            fetched_at=_opt_str(frontmatter.get("fetched_at")),
+            refresh=_opt_str(frontmatter.get("refresh")) if not isinstance(frontmatter.get("refresh"), (dict, list)) else None,
             content=content,
             raw_content=raw_content,
             size_tokens=size_tokens,
@@ -235,6 +238,12 @@ def _parse_activation(raw: object, file_type: str | None) -> Activation | None:
     if not tools and not constraints and not next_atoms:
         return None
     return Activation(tools=tools, constraints=constraints, next=next_atoms)
+
+
+def _opt_str(value: object) -> str | None:
+    if value is None or value == "":
+        return None
+    return str(value)
 
 
 def _ensure_list(value: object) -> list[str]:

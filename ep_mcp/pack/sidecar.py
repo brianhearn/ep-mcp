@@ -25,6 +25,7 @@ class SidecarChunk:
     line_range: tuple[int, int]
     chunk_summary: str | None = None
     context_prefix: str | None = None
+    heading_path: list[str] | None = None
 
 
 @dataclass
@@ -80,6 +81,10 @@ def load_sidecar(path: Path) -> ChunkSidecar | None:
                 line_range=(int(line_range[0]), int(line_range[1])),
                 chunk_summary=item.get("chunk_summary") or None,
                 context_prefix=item.get("context_prefix") or None,
+                heading_path=(
+                    [str(h) for h in item["heading_path"]]
+                    if isinstance(item.get("heading_path"), list) else None
+                ),
             )
         )
 

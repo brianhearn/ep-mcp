@@ -98,6 +98,49 @@ class RetrievalEngine:
         graph_expansion_confidence_threshold: float | None = None,
         graph_expansion_min_score: float | None = None,
     ) -> list[SearchResult]:
+        """Hybrid search plus freshness annotation (age_stale / expired)."""
+        results = await self._search_impl(
+            request,
+            graph_expansion_confidence_threshold=graph_expansion_confidence_threshold,
+            graph_expansion_min_score=graph_expansion_min_score,
+        )
+        self._annotate_freshness(results)
+        return results
+
+    def _annotate_freshness(self, results: list[SearchResult]) -> None:
+        """Set verified_age_days / age_stale / expired; optional down-rank (off by default)."""
+        from .freshness import freshness_for_file, parse_date
+
+        penalty = float(getattr(self.config, "freshness_penalty", 0.0) or 0.0)
+        cache: dict[str, dict] = {}
+        for r in results:
+            pf = self.pack.files.get(r.source_file)
+            if pf is None:
+                continue
+            fr = cache.get(r.source_file)
+            if fr is None:
+                fr = cache[r.source_file] = freshness_for_file(
+                    self.pack, pf, today=parse_date(getattr(self.config, "freshness_today", None)),
+                )
+            r.verified_age_days = fr["verified_age_days"]
+            r.age_stale = fr["age_stale"]
+            r.expired = fr["expired"]
+            r.expires_at = fr["expires_at"]
+            if penalty > 0 and (r.age_stale or r.expired):
+                r.score = round(r.score * (1.0 - penalty), 4)
+        if penalty > 0:
+            # Re-sort the ranked core only; requires-expanded atoms stay appended.
+            core = [r for r in results if not r.requires_expanded]
+            tail = [r for r in results if r.requires_expanded]
+            core.sort(key=lambda r: r.score, reverse=True)
+            results[:] = core + tail
+
+    async def _search_impl(
+        self,
+        request: SearchRequest,
+        graph_expansion_confidence_threshold: float | None = None,
+        graph_expansion_min_score: float | None = None,
+    ) -> list[SearchResult]:
         """Execute a hybrid search against the pack index.
 
         Args:
@@ -1307,7 +1350,20 @@ def _chunk_metadata_fields(chunk: dict) -> dict:
         "section_slug": chunk.get("section_slug"),
         "span_hash": chunk.get("span_hash"),
         "confidence": chunk.get("confidence"),
+        "heading_path": _parse_heading_path(chunk.get("heading_path")),
     }
+
+
+def _parse_heading_path(raw) -> list[str] | None:
+    if raw is None:
+        return None
+    if isinstance(raw, list):
+        return raw
+    try:
+        val = json.loads(raw)
+        return val if isinstance(val, list) else None
+    except (json.JSONDecodeError, TypeError):
+        return None
 
 
 def _search_result_from_chunk(chunk: dict, score: float, **kwargs) -> SearchResult:

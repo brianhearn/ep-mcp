@@ -11,6 +11,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
+from . import __version__
 from .auth import APIKeyAuth
 from .config import ServerConfig
 from .embeddings.base import EmbeddingProvider
@@ -24,6 +25,7 @@ from .retrieval.engine import RetrievalEngine
 from .retrieval.reranker import Reranker
 from .retrieval.graph_helpers import GraphLookup
 from .prompts.pack_prompts import register_prompts
+from .skills import SkillCatalog, build_skills_extension, register_skill_resources, skills_enabled
 from .resources.pack_resources import register_resources
 from .tools.ep_graph_traverse import ep_graph_traverse
 from .tools.ep_list_topics import ep_list_topics
@@ -101,21 +103,40 @@ def _get_server_instructions(pack: Pack) -> str:
     return " ".join(parts)
 
 
+def _skills_cache_hints(catalogs: dict) -> dict | None:
+    """resources/read ttlMs/cacheScope hints when the skills extension is on."""
+    if not catalogs:
+        return None
+    from mcp.server.caching import CacheHint
+
+    ttl = min(c.ttl_ms for c in catalogs.values())
+    scope = "private" if any(c.private for c in catalogs.values()) else "public"
+    return {"resources/read": CacheHint(ttl_ms=ttl, scope=scope)}
+
+
 def create_pack_mcp(
     slug: str,
     pack: Pack,
     engine: RetrievalEngine,
     graph_lookup: GraphLookup | None = None,
     query_log_path: str | None = None,
+    skills_private: bool = False,
 ):
     """Create an MCPServer instance with tools, resources, and prompts for a pack."""
     from mcp.server.mcpserver import MCPServer
 
+    catalogs = (
+        {slug: SkillCatalog(pack, private=skills_private)} if skills_enabled(pack) else {}
+    )
     mcp = MCPServer(
         f"ep-mcp-{slug}",
         instructions=_get_server_instructions(pack),
         version=pack.version,
+        extensions=[build_skills_extension(catalogs)] if catalogs else None,
+        cache_hints=_skills_cache_hints(catalogs),
     )
+    for cat in catalogs.values():
+        register_skill_resources(mcp, cat)
 
     @mcp.tool(
         title="Search ExpertPack",
@@ -243,6 +264,8 @@ def create_pack_mcp(
         path: str | None = None,
         id: str | None = None,
         reconstruct: bool = False,
+        section: str | None = None,
+        neighbors: bool = False,
     ) -> dict:
         """Read a whole ExpertPack atom by path or provenance id.
 
@@ -253,12 +276,16 @@ def create_pack_mcp(
             path: Pack-relative file path (e.g. 'concepts/routing.md').
             id: Provenance id (e.g. 'my-pack/concepts/routing').
             reconstruct: Include original markdown and provenance block.
+            section: Optional section slug or heading text (from ep_search
+                heading_path / ep_read sections) to read just that section.
+            neighbors: With section, also return previous/next sections.
 
         Returns:
             Full atom content plus requires/activation metadata.
         """
         try:
-            return ep_read(pack, path=path, id=id, reconstruct=reconstruct)
+            return ep_read(pack, path=path, id=id, reconstruct=reconstruct,
+                           section=section, neighbors=neighbors)
         except Exception as e:
             logger.exception(
                 "ep_read_tool error | pack=%s path=%r id=%r", slug, path, id,
@@ -311,11 +338,18 @@ def create_multi_pack_mcp(
             "Use ep_list_topics to browse structure and ep_graph_traverse for graph hops."
         )
     
+    catalogs = {
+        s: SkillCatalog(i.pack) for s, i in pack_instances.items() if skills_enabled(i.pack)
+    }
     mcp = MCPServer(
         "ep-mcp-multi",
         instructions=instructions,
-        version="0.6.0",
+        version=__version__,
+        extensions=[build_skills_extension(catalogs)] if catalogs else None,
+        cache_hints=_skills_cache_hints(catalogs),
     )
+    for cat in catalogs.values():
+        register_skill_resources(mcp, cat)
     
     def _resolve_pack(pack: str | None) -> tuple[str, PackInstance] | tuple[None, str]:
         """Resolve pack slug to instance, handling optional default for single-pack configs.
@@ -474,6 +508,8 @@ def create_multi_pack_mcp(
         path: str | None = None,
         id: str | None = None,
         reconstruct: bool = False,
+        section: str | None = None,
+        neighbors: bool = False,
     ) -> dict:
         """Read a whole ExpertPack atom by path or provenance id.
 
@@ -485,6 +521,9 @@ def create_multi_pack_mcp(
             path: Pack-relative file path (e.g. 'concepts/routing.md').
             id: Provenance id (e.g. 'my-pack/concepts/routing').
             reconstruct: Include original markdown and provenance block.
+            section: Optional section slug or heading text (from ep_search
+                heading_path / ep_read sections) to read just that section.
+            neighbors: With section, also return previous/next sections.
 
         Returns:
             Full atom content plus requires/activation metadata.
@@ -495,7 +534,8 @@ def create_multi_pack_mcp(
         
         inst = inst_or_error
         try:
-            return ep_read(inst.pack, path=path, id=id, reconstruct=reconstruct)
+            return ep_read(inst.pack, path=path, id=id, reconstruct=reconstruct,
+                           section=section, neighbors=neighbors)
         except Exception as e:
             logger.exception(
                 "ep_read_tool error | pack=%s path=%r id=%r", slug, path, id,
@@ -520,6 +560,9 @@ async def init_pack(
 ) -> PackInstance:
     """Load, index, and initialize a pack with MCP tools."""
     pack = load_pack(pack_path, slug_override=slug, index_dir_override=index_dir)
+    _pc = next((p for p in config.packs if p.slug == slug), None)
+    if _pc is not None and _pc.skills_enabled is not None:
+        pack.mcp_config.skills.enabled = bool(_pc.skills_enabled)
     store = SQLiteStore(pack.index_path, embedding_dimension=provider.dimension)
     store.open()
 
@@ -555,7 +598,11 @@ async def init_pack(
         batch_size=reranker_cfg.batch_size,
     )
     engine = RetrievalEngine(pack, store, provider, retrieval_cfg, graph_lookup, reranker=reranker)
-    mcp = create_pack_mcp(slug, pack, engine, graph_lookup, query_log_path=config.query_log_path)
+    mcp = create_pack_mcp(
+        slug, pack, engine, graph_lookup,
+        query_log_path=config.query_log_path,
+        skills_private=bool(pack_cfg is not None and pack_cfg.api_keys),
+    )
 
     return PackInstance(pack=pack, store=store, engine=engine, mcp=mcp, index_manager=manager)
 
@@ -865,6 +912,11 @@ def build_app(
             "confidence": result.confidence,
             "excerpt": result.excerpt,
             "stale": result.stale,
+            "heading_path": result.heading_path,
+            "verified_age_days": result.verified_age_days,
+            "age_stale": result.age_stale,
+            "expired": result.expired,
+            "expires_at": result.expires_at,
         }
 
     routes = [

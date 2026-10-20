@@ -32,6 +32,10 @@ class PackConfig(BaseModel):
     graph_expansion_min_score: float | None = None
     graph_expansion_structural_bonus: float | None = None
 
+    # Optional override for manifest mcp.skills.enabled (Skills over MCP, 0.7.0).
+    # None = use the pack's manifest; true/false = force on/off for this server.
+    skills_enabled: bool | None = None
+
 
 class EmbeddingConfig(BaseModel):
     """Embedding provider configuration.
@@ -169,6 +173,12 @@ class RetrievalConfig(BaseModel):
     requires_expansion_max_depth: int = 2       # transitive hop cap
     requires_expansion_max_atoms: int = 3       # max extra atoms appended per query
     requires_expansion_token_budget: int = 3500 # cumulative token budget for appended atoms
+    # Freshness down-rank (Core 4.2). 0.0 = off (default): results only carry
+    # age_stale / expired flags. When > 0, score *= (1 - penalty) for age-stale
+    # or expired atoms, then the ranked core is re-sorted.
+    freshness_penalty: float = 0.0
+    # Pin the freshness clock (YYYY-MM-DD) for evals/tests. None = today (UTC).
+    freshness_today: str | None = None
     requires_expansion_score: float = 0.30      # displayed score for appended atoms (below typical threshold)
 
 

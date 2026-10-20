@@ -22,7 +22,10 @@ An MCP server that turns any ExpertPack into a live, queryable knowledge service
 - **Cross-encoder reranker**: Optional second-pass precision reranker (disabled by default, ~70ms warm latency when enabled)
 - **Provenance-first**: Every result includes `id`, `content_hash`, `verified_at`, `source_file`
 - **Reconstruct mode (RFC-003)**: Opt-in `reconstruct=true` / `reconstruct: true` enriches results with `fragment_id`, `line_range`, `original_markdown`, span-level `content_hash`, `excerpt`, `stale`, and byte offsets so agents can prove exactly what source text grounded an answer
-- **EP-native chunking**: Files are treated as atomic retrieval units (split at `##` only for oversized content)
+- **EP-native chunking**: Files are treated as atomic retrieval units (split at `##`/`###` only for oversized content). Split chunks keep the original span as `content`/`span_hash`, carry a computed `line_range`, and record a `heading_path` (0.7.0+)
+- **Heading paths (0.7.0+)**: every hit carries `heading_path` (e.g. `["Routing", "Setup", "Ports"]`) so an H3 hit keeps its H2 parent; `ep_read(path, section=..., neighbors=true)` reads just that section plus its previous/next siblings
+- **Freshness (0.7.0+, ExpertPack Core 4.2)**: hits and `ep_read` carry `verified_age_days`, `age_stale` (`verified_at` older than the file's `refresh` or the manifest `freshness.refresh_cycle`), `expired` and `expires_at` (volatile TTL). `stale` keeps its old meaning — **index drift** (file changed since indexing, reconstruct mode only). Optional down-rank via `retrieval.freshness_penalty` (default `0.0` = off)
+- **Skills over MCP (0.7.0+, opt-in)**: set `mcp.skills.enabled: true` in a pack's `manifest.yaml` to declare the `io.modelcontextprotocol/skills` extension (SEP-2640). Each pack becomes one skill at `skill://{slug}/SKILL.md` (generated) with every non-`on_demand` file served verbatim at `skill://{slug}/{path}`; `skills/list` / `skills/get` publish the manifest with SHA-256 digests, sizes, `ttlMs` and `cacheScope`. Host support is still thin, so the `ep_*` tools remain the primary path
 - **Frontmatter aware**: Strips metadata for embedding, extracts `type`, `tags`, `requires`, etc. for boosting/expansion/filtering
 - **Incremental indexing**: Content-hash based staleness detection — only re-embeds changed files
 - **Multi-pack support**: Path-based routing at `/packs/{slug}/mcp`
@@ -40,9 +43,11 @@ An MCP server that turns any ExpertPack into a live, queryable knowledge service
   - `ep://{slug}/authority`
   - `ep://{slug}/files`
   - `ep://{slug}/file/{+path}` (raw content with frontmatter)
+  - `skill://{slug}/SKILL.md`, `skill://{slug}/{+path}` (only when `mcp.skills.enabled: true`)
 - **Transports**: Streamable HTTP (primary, cloud-ready), stdio (local dev)
   - **stdio multi-pack support (0.6.0+)**: When using `--transport stdio` with multiple packs configured, all tools accept an optional `pack` parameter (slug string) to specify which pack to query. For single-pack configurations, the `pack` parameter is optional and defaults to the only configured pack. This allows MCP hosts (Cursor, Claude Desktop) to use a single stdio process for multiple packs instead of requiring one process per pack.
 - **HTTP endpoint**: `GET /search` (for non-MCP HTTP clients)
+- **Golden retrieval eval (0.7.0+)**: `tests/eval/` — YAML query sets (`expected` best-first, `must_not`, `category`) scored as recall@1/3/5, MRR and must_not violations per pack and category. Skipped in the default run; `pytest tests/eval -m golden --golden <dir> --packs-root <dir>` with `EP_EVAL_TODAY=2026-10-20` and optional `EP_EVAL_MIN="recall@5=0.9,mrr=0.7"`, or `python tests/eval/golden_eval.py --golden <dir> --today 2026-10-20`
 - **Auth**: API key (Phase 1), designed for OAuth 2.1 (Phase 2)
 
 ## Quick Start

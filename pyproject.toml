@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ep-mcp"
-version = "0.6.0"
+version = "0.7.0"
 description = "ExpertPack MCP Server — expertise-as-a-service over MCP"
 readme = "README.md"
 license = "Apache-2.0"
@@ -55,3 +55,6 @@ line-length = 100
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "golden: golden retrieval eval against real packs (needs --golden/EP_GOLDEN; skipped otherwise)",
+]

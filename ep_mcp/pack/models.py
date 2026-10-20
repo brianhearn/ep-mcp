@@ -64,6 +64,9 @@ class PackFile(BaseModel):
         None,
         description="Optional tools/constraints/next on operational atoms",
     )
+    expires_at: str | None = Field(None, description="Volatile TTL: ISO date after which content is expired")
+    fetched_at: str | None = Field(None, description="Volatile: ISO date the source was last fetched")
+    refresh: str | None = Field(None, description="Per-file refresh TTL (ISO 8601 duration), overrides manifest refresh_cycle")
     content: str = Field("", description="Markdown content, frontmatter stripped")
     raw_content: str = Field("", description="Full markdown content with frontmatter")
     size_tokens: int = Field(0, description="Approximate token count")
@@ -123,6 +126,14 @@ class MCPResourcesConfig(BaseModel):
     )
 
 
+class MCPSkillsConfig(BaseModel):
+    """Skills-over-MCP (io.modelcontextprotocol/skills, SEP-2640) sub-config from mcp.skills."""
+
+    enabled: bool = Field(False, description="Advertise the skills extension and serve skill:// resources")
+    ttl_ms: int | None = Field(None, description="ttlMs cache hint; default 3600000 or min volatile refresh")
+    description: str | None = Field(None, description="Override for the generated SKILL.md description")
+
+
 class MCPConfig(BaseModel):
     """Parsed mcp block from manifest.yaml."""
 
@@ -133,6 +144,7 @@ class MCPConfig(BaseModel):
         default_factory=list, description="Explicit prompt declarations"
     )
     resources: MCPResourcesConfig = Field(default_factory=MCPResourcesConfig)
+    skills: "MCPSkillsConfig" = Field(default_factory=lambda: MCPSkillsConfig())
 
 
 # --- Manifest ---

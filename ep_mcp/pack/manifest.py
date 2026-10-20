@@ -14,6 +14,7 @@ from .models import (
     MCPConfig,
     MCPPromptDeclaration,
     MCPResourcesConfig,
+    MCPSkillsConfig,
 )
 
 
@@ -149,10 +150,23 @@ def _parse_mcp_config(mcp_raw: dict) -> MCPConfig:
         additional=_ensure_list(resources_raw.get("additional", [])),
     )
 
+    skills_raw = mcp_raw.get("skills", {})
+    if isinstance(skills_raw, bool):
+        skills_raw = {"enabled": skills_raw}
+    if not isinstance(skills_raw, dict):
+        skills_raw = {}
+    ttl = skills_raw.get("ttl_ms")
+    skills = MCPSkillsConfig(
+        enabled=bool(skills_raw.get("enabled", False)),
+        ttl_ms=int(ttl) if ttl is not None else None,
+        description=(str(skills_raw["description"]).strip() if skills_raw.get("description") else None),
+    )
+
     return MCPConfig(
         instructions=instructions,
         prompts=prompts,
         resources=resources,
+        skills=skills,
     )
 
 

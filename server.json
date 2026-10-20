@@ -5,13 +5,13 @@
   "description": "Serve ExpertPack knowledge packs over MCP with hybrid search, graph traversal and provenance.",
   "repository": { "url": "https://github.com/brianhearn/ep-mcp", "source": "github" },
   "websiteUrl": "https://expertpack.ai",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "ep-mcp",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "runtimeHint": "uvx",
       "transport": { "type": "stdio" },
       "packageArguments": [

@@ -325,7 +325,8 @@ CREATE TABLE index_meta (
 ExpertPack uses **schema-as-chunker**: files are authored as retrieval units. The chunking strategy reflects this:
 
 1. **Default:** One file = one chunk. Most EP files are 200-800 tokens and pass through intact.
-2. **Oversized files (>1000 tokens):** Split at markdown heading boundaries (## or ###). Each split retains the file's title as a prefix for context.
+2. **Oversized files (>1000 tokens):** Split at markdown heading boundaries (## or ###). Sections after the first get a `# {title}` prefix in `indexed_content` only (embed + BM25); `content` and `span_hash` are the original span and `line_range` is computed from heading offsets (0.7.0). `chunk_file(prefix_heading_path=True)` puts the full heading path in the prefix instead; it is off by default because it was neutral-to-negative on the 2026-10-20 golden sets.
+3a. **Heading path (0.7.0):** every chunk stores `heading_path` (JSON column `chunks.heading_path`): ancestor headings outermost first, with the file title in the H1 slot. Sidecars may declare it; otherwise it is derived from headings above `line_range[0]` (code fences ignored). `index_features` = `context_prefix_v1+nav_filter_v1+heading_path_v1+split_span_v1` forces a one-time rebuild (embedding cache is reused).
 3. **RFC-004 sidecars:** Authoritative `line_range` / `chunk_order`. Optional `context_prefix` is prepended for embed + BM25 only (`indexed_content`); `chunks.content` and reconstruct spans stay the original body.
 4. **Always-load files** (from manifest `context.always`): Indexed (unless also navigation) and exposed as MCP Resources.
 5. **Not indexed:** `retrieval_strategy: navigation`, `concept_scope: navigation`, `_index.md`, `meta/source-coverage.md`, and `context.on_demand`. Those files remain readable via `ep_read` and resources.
@@ -530,7 +531,15 @@ class SearchResult:
     chunk_index: int        # 0 for whole-file chunks
     title: str | None       # File title
     graph_expanded: bool    # True if added via graph expansion
+    heading_path: list[str] | None   # 0.7.0: ancestor headings of the chunk
+    verified_age_days: int | None    # 0.7.0: today - verified_at
+    age_stale: bool | None           # 0.7.0: verified_age_days > refresh (file) or refresh_cycle (manifest)
+    expired: bool | None             # 0.7.0: volatile expires_at < today
+    expires_at: str | None
+    stale: bool | None               # index drift (reconstruct mode): span hash changed since indexing
 ```
+
+Freshness is computed after ranking in `RetrievalEngine.search` (`retrieval/freshness.py`). `retrieval.freshness_penalty` (default 0) multiplies the score of age-stale/expired hits by `1 - penalty` and re-sorts the ranked core; `retrieval.freshness_today` pins the clock for evals.
 
 ### 5.4 Graph-Aware Retrieval
 
@@ -878,6 +887,8 @@ async def ep_list_topics(
 
 Reads a whole atom by pack-relative `path` or provenance `id`. Search hits (especially sidecar fragments) are locators; `ep_read` is the answer. Returns `content`, `requires`, `activation`, and optional reconstruct fields. Navigation and on-demand files are readable here even though they are not in the RAG index.
 
+0.7.0: the payload adds `sections` (slug, heading, level, heading_path, line_range for every ##/###), freshness fields, and accepts `section=<slug or heading>` (returns only that section; a ## includes its ### children) and `neighbors=true` (previous/next sibling sections with text).
+
 ### 7.4 `ep_graph_traverse` (Post-MVP)
 
 Follow relationships in the pack's knowledge graph.
@@ -945,7 +956,19 @@ ep://{pack_slug}/authority           → authority_boundary (or null)
 ep://{pack_slug}/always/{path}       → A specific always-tier file
 ep://{pack_slug}/file/{+path}        → Any file by path (raw, with frontmatter)
 ep://{pack_slug}/files               → File listing JSON
+skill://{pack_slug}/SKILL.md         → Generated skill entry point (mcp.skills.enabled only)
+skill://{pack_slug}/{+path}          → Pack file, verbatim (non-on_demand files only)
 ```
+
+### 8.2a Skills over MCP (0.7.0, opt-in)
+
+`ep_mcp/skills.py` implements the published `io.modelcontextprotocol/skills` extension (SEP-2640 Final, ext-skills spec). When a pack sets `mcp.skills.enabled: true`, the server passes an SDK `Extension` to `MCPServer(extensions=[...])`, which advertises `capabilities.extensions["io.modelcontextprotocol/skills"] = {}` (no `directoryRead`) and serves:
+
+- `skills/list` → `{resultType: "complete", skills: [entry], ttlMs, cacheScope}`
+- `skills/get {uri}` → `{resultType: "complete", skill: entry, ttlMs, cacheScope}`; unknown URI → JSON-RPC `-32602`
+- entry = `{uri: "skill://{slug}/SKILL.md", frontmatter: {name, description}, resources: [{uri, digest: "sha256:<hex>", size}]}`
+
+Digests/sizes are computed from the exact UTF-8 bytes `resources/read` returns (files are read from disk, so the frontmatter `content_hash`, which covers stripped content, is not reused). `ttlMs` = `mcp.skills.ttl_ms` or min(1 h, shortest volatile `refresh`); `cacheScope` = `private` when the pack has API keys, else `public`. A `resources/read` cache hint with the same values is set server-wide when skills are on. Files in `context.on_demand` (per-file `retrieval_strategy: on_demand`) are excluded; skills cap at 512 files / 16 MiB.
 
 ### 8.3 Resource Registration
 

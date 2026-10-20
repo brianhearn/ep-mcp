@@ -38,6 +38,8 @@ def cli(verbose: bool, log_file: str | None) -> None:
 @click.option("--transport", "-t", default="http", type=click.Choice(["http", "stdio"]))
 def serve(config_path: str, transport: str) -> None:
     """Start the EP MCP server."""
+    # stdout is the JSON-RPC channel on stdio: status lines must go to stderr.
+    _stdio = transport == "stdio"
     try:
         config = load_config(config_path)
     except (FileNotFoundError, ValueError) as e:
@@ -48,10 +50,10 @@ def serve(config_path: str, transport: str) -> None:
         click.echo("Error: no packs configured", err=True)
         sys.exit(1)
 
-    click.echo(f"Starting EP MCP server on {config.host}:{config.port}")
-    click.echo(f"Transport: {transport}")
-    click.echo(f"Packs: {[p.slug for p in config.packs]}")
-    click.echo(f"Embedding: {config.embedding.provider}/{config.embedding.model}")
+    click.echo(err=_stdio, message=f"Starting EP MCP server on {config.host}:{config.port}")
+    click.echo(err=_stdio, message=f"Transport: {transport}")
+    click.echo(err=_stdio, message=f"Packs: {[p.slug for p in config.packs]}")
+    click.echo(err=_stdio, message=f"Embedding: {config.embedding.provider}/{config.embedding.model}")
 
     import asyncio
     import uvicorn
@@ -70,7 +72,7 @@ def serve(config_path: str, transport: str) -> None:
         provider = QueryEmbeddingCache(provider, cache_path=_cache_base / "query_embed_cache.db")
         pack_instances = {}
         for pack_config in config.packs:
-            click.echo(f"Loading pack: {pack_config.slug} from {pack_config.path}")
+            click.echo(err=_stdio, message=f"Loading pack: {pack_config.slug} from {pack_config.path}")
             inst = await init_pack(
                 slug=pack_config.slug,
                 pack_path=pack_config.path,
@@ -79,7 +81,7 @@ def serve(config_path: str, transport: str) -> None:
                 index_dir=pack_config.index_dir,
             )
             pack_instances[pack_config.slug] = inst
-            click.echo(f"  \u2705 {inst.pack.name}: {len(inst.pack.files)} files, "
+            click.echo(err=_stdio, message=f"  \u2705 {inst.pack.name}: {len(inst.pack.files)} files, "
                        f"{inst.store.chunk_count()} chunks")
         return pack_instances
 

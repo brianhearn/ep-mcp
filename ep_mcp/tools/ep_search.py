@@ -116,6 +116,11 @@ async def ep_search(
             "confidence": r.confidence,
             "excerpt": r.excerpt,
             "stale": r.stale,
+            "heading_path": r.heading_path,
+            "verified_age_days": r.verified_age_days,
+            "age_stale": r.age_stale,
+            "expired": r.expired,
+            "expires_at": r.expires_at,
         }
         for r in results
     ]

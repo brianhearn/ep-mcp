@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Bump when index-side contract changes (context_prefix, navigation filter).
 # Existing indexes with a different value are fully rebuilt.
-INDEX_FEATURES = "context_prefix_v1+nav_filter_v1"
+INDEX_FEATURES = "context_prefix_v1+nav_filter_v1+heading_path_v1+split_span_v1"
 
 
 class IndexManager:
@@ -231,6 +231,7 @@ class IndexManager:
                 span_hash=chunk.span_hash,
                 confidence=pack_file.provenance.confidence,
                 indexed_content=chunk.indexed_content,
+                heading_path=chunk.heading_path,
             )
 
         stats.total_chunks = self.store.chunk_count()

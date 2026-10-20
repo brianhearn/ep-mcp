@@ -1,0 +1,15 @@
+pack: golden-fixture
+queries:
+  - id: fx-001
+    query: quota percentage of territory potential
+    category: direct
+    expected: [concepts/quota.md]
+  - id: fx-002
+    query: order of stops for delivery vans
+    category: direct
+    expected: [concepts/routing.md]
+    must_not: [concepts/quota.md]
+  - id: fx-003
+    query: gravity model store sales distance
+    category: direct
+    expected: [concepts/gravity.md]

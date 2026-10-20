@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-10-20 — Heading paths, freshness, Skills over MCP, golden eval
+
+Targets ExpertPack Core 4.2. Existing indexes rebuild once on first start (`index_features` changed); embeddings are reused from the cache.
+
+### Added
+
+- **Heading path per chunk** — `heading_path` (e.g. `["Guide", "Setup", "Ports"]`) is stored per chunk (`chunks.heading_path`), returned by `ep_search` and the HTTP `/search` endpoints, and honoured from RFC-004 sidecars when declared. An H3 hit no longer loses its H2 parent.
+- **`ep_read` sections** — payload lists `sections`; new `section=` (slug or heading text) and `neighbors=true` arguments read one section plus its previous/next siblings.
+- **Age staleness and volatile expiry** — `verified_age_days`, `age_stale` (`verified_at` vs the file's `refresh` or the manifest `freshness.refresh_cycle`), `expired` and `expires_at` on every hit and in `ep_read`. `PackFile` now parses `refresh`, `fetched_at`, `expires_at`. Optional down-rank via `retrieval.freshness_penalty` (default `0.0`, off); `retrieval.freshness_today` pins the clock.
+- **Skills over MCP (opt-in)** — `mcp.skills.enabled: true` declares the `io.modelcontextprotocol/skills` extension and serves one skill per pack: generated `skill://{slug}/SKILL.md` plus every non-`on_demand` file verbatim; `skills/list` / `skills/get` return spec-shaped entries (`uri`, `frontmatter`, `resources[{uri, digest: "sha256:…", size}]`, `resultType`, `ttlMs`, `cacheScope`). Off by default; `ep_*` tools stay primary.
+- **Golden retrieval eval** — `tests/eval/golden_eval.py` + `tests/eval/test_golden.py` (marker `golden`): recall@1/3/5, full@k, MRR, must_not violations and out-of-scope cleanliness per pack and per `category`, configurable minimum thresholds, offline fixture self-test, CLI usable against any checkout for before/after comparisons.
+
+### Changed
+
+- **`stale` documented as index drift** — unchanged behaviour (reconstruct mode: span hash differs from the indexed hash); age is now `age_stale`.
+- **Split chunks keep the original span** — for oversized files without sidecars, the `# {title}` prefix moved from `content`/`span_hash` into `indexed_content` (embed + BM25 only), and `line_range` is computed from heading offsets, so RFC-003 citations work for split files.
+- `create_multi_pack_mcp` reports the package version instead of a hard-coded string.
+
+### Fixed
+
+- **Integration test option** — `--pack` moved to `tests/conftest.py`; `pytest` no longer errors with `no option named '--pack'` (it skips cleanly).
+
+### Notes
+
+- Golden eval (2026-10-20 sets, clock pinned to 2026-10-20, Gemini embeddings): 0.7.0 matches 0.6.0 exactly on all three packs. A heading-path-in-prefix variant moved a few borderline MMR cut-offs (ezt-designer recall@1 +0.045, tm-industry recall@5 −0.044), so `chunk_file(prefix_heading_path=...)` defaults to off.
+
 ## [0.6.0] — 2026-09-30 — Multi-pack stdio transport support
 
 ### Added

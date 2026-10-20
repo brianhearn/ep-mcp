@@ -97,5 +97,23 @@ class SearchResult(BaseModel):
     )
     stale: bool | None = Field(
         None,
-        description="True when the span hash no longer matches the indexed hash",
+        description=(
+            "Index drift: True when the file's current span hash no longer matches "
+            "the hash recorded at index time (reconstruct mode only). Not age staleness."
+        ),
     )
+    heading_path: list[str] | None = Field(
+        None,
+        description="Ancestor heading path of the chunk, e.g. ['Title', 'H2', 'H3']",
+    )
+    verified_age_days: int | None = Field(
+        None, description="Days since frontmatter verified_at (None when absent)",
+    )
+    age_stale: bool | None = Field(
+        None,
+        description="True when verified_at is older than freshness.refresh_cycle (or file refresh)",
+    )
+    expired: bool | None = Field(
+        None, description="True when a volatile file's expires_at is in the past",
+    )
+    expires_at: str | None = Field(None, description="Volatile expires_at (ISO date)")
