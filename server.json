@@ -2,26 +2,27 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.brianhearn/ep-mcp",
   "title": "ExpertPack MCP",
-  "description": "Serve ExpertPack knowledge packs over MCP with hybrid search, graph traversal and provenance.",
+  "description": "Serve ExpertPack knowledge packs over MCP with hybrid/lexical search, graph traversal, integrity verification, and provenance.",
   "repository": { "url": "https://github.com/brianhearn/ep-mcp", "source": "github" },
   "websiteUrl": "https://expertpack.ai",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "ep-mcp",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "runtimeHint": "uvx",
       "transport": { "type": "stdio" },
       "packageArguments": [
         { "type": "positional", "value": "serve" },
-        { "type": "named", "name": "--config", "description": "Path to an ep-mcp config YAML listing your ExpertPacks", "isRequired": true, "format": "filepath" },
-        { "type": "named", "name": "--transport", "value": "stdio" }
+        { "type": "positional", "value": "pack_path", "description": "Path to an ExpertPack directory (works offline with zero API keys; omit --config for zero-config stdio)", "isRequired": true, "format": "filepath" }
       ],
       "environmentVariables": [
-        { "name": "GEMINI_API_KEY", "description": "Gemini API key for embeddings (or set AZURE_OPENAI_API_KEY when using Azure OpenAI)", "isRequired": false, "isSecret": true },
-        { "name": "AZURE_OPENAI_API_KEY", "description": "Azure OpenAI key, if the config uses the Azure embedding provider", "isRequired": false, "isSecret": true }
+        { "name": "GEMINI_API_KEY", "description": "Optional Gemini API key for vector+BM25 hybrid search (omit for zero-key lexical BM25 mode)", "isRequired": false, "isSecret": true },
+        { "name": "OPENAI_API_KEY", "description": "Optional OpenAI API key for vector+BM25 hybrid search", "isRequired": false, "isSecret": true },
+        { "name": "OPENAI_BASE_URL", "description": "Optional OpenAI-compatible base URL (e.g. http://localhost:11434/v1 for local Ollama embeddings)", "isRequired": false, "isSecret": false },
+        { "name": "AZURE_OPENAI_API_KEY", "description": "Optional Azure OpenAI key when using Azure embeddings", "isRequired": false, "isSecret": true }
       ]
     }
   ]

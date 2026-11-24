@@ -48,6 +48,15 @@ def ep_read(
         logger.info("ep_read miss | pack=%s path=%r id=%r", pack.slug, path, id)
         return {"error": "File not found in pack", "path": path, "id": id}
 
+    ref_id = pack_file.provenance.id or f"{pack.slug}/{pack_file.path}"
+    grade = pack_file.provenance.confidence or "unspecified"
+    verified = pack_file.provenance.verified_at or "unverified"
+    provenance_token = f"[ep:{ref_id}@v{pack.version}|{grade}|{verified}|{pack.integrity_status}]"
+    citation_markdown = (
+        f"> **{provenance_token}** — `{pack_file.path}`"
+        + (f" ({pack_file.title})" if pack_file.title else "")
+    )
+
     payload = {
         "path": pack_file.path,
         "title": pack_file.title,
@@ -59,6 +68,11 @@ def ep_read(
         "verified_at": pack_file.provenance.verified_at,
         "verified_by": pack_file.provenance.verified_by,
         "confidence": pack_file.provenance.confidence,
+        "pack_version": pack.version,
+        "integrity_status": pack.integrity_status,
+        "digest_verified": pack.digest_verified,
+        "provenance_token": provenance_token,
+        "citation_markdown": citation_markdown,
         "retrieval_strategy": pack_file.retrieval_strategy,
         "concept_scope": pack_file.concept_scope,
         "requires": pack_file.requires,

@@ -111,21 +111,39 @@ class SQLiteStore:
         except sqlite3.OperationalError:
             pass  # Already exists
 
-        # sqlite-vec virtual table
-        try:
-            c.execute(f"""
-                CREATE VIRTUAL TABLE chunks_vec USING vec0(
-                    chunk_id INTEGER PRIMARY KEY,
-                    embedding FLOAT[{self.embedding_dimension}]
-                )
-            """)
-        except sqlite3.OperationalError:
-            pass  # Already exists
+        # sqlite-vec virtual table (skipped when embedding_dimension == 0 for lexical-only mode)
+        if self.embedding_dimension > 0:
+            try:
+                c.execute(f"""
+                    CREATE VIRTUAL TABLE chunks_vec USING vec0(
+                        chunk_id INTEGER PRIMARY KEY,
+                        embedding FLOAT[{self.embedding_dimension}]
+                    )
+                """)
+            except sqlite3.OperationalError:
+                pass  # Already exists
 
         c.commit()
 
         self._migrate_schema()
         self._install_fts_triggers()
+
+    def recreate_vec_table(self, new_dimension: int) -> None:
+        """Drop and recreate chunks_vec when embedding dimension changes."""
+        self.embedding_dimension = new_dimension
+        c = self.conn
+        try:
+            c.execute("DROP TABLE IF EXISTS chunks_vec")
+        except sqlite3.OperationalError:
+            pass
+        if new_dimension > 0:
+            c.execute(f"""
+                CREATE VIRTUAL TABLE chunks_vec USING vec0(
+                    chunk_id INTEGER PRIMARY KEY,
+                    embedding FLOAT[{new_dimension}]
+                )
+            """)
+        c.commit()
 
     def _install_fts_triggers(self) -> None:
         """(Re)install FTS sync triggers that prefer indexed_content when set."""
@@ -223,7 +241,7 @@ class SQLiteStore:
                  span_hash, confidence, indexed_content, heading_json, chunk_id),
             )
             # Update vector
-            if embedding:
+            if embedding and self.embedding_dimension > 0:
                 c.execute("DELETE FROM chunks_vec WHERE chunk_id = ?", (chunk_id,))
                 c.execute(
                     "INSERT INTO chunks_vec (chunk_id, embedding) VALUES (?, ?)",
@@ -244,7 +262,7 @@ class SQLiteStore:
             )
             chunk_id = cursor.lastrowid
             # Insert vector
-            if embedding:
+            if embedding and self.embedding_dimension > 0:
                 c.execute(
                     "INSERT INTO chunks_vec (chunk_id, embedding) VALUES (?, ?)",
                     (chunk_id, _serialize_f32(embedding)),
@@ -263,7 +281,11 @@ class SQLiteStore:
 
         if chunk_ids:
             placeholders = ",".join("?" * len(chunk_ids))
-            c.execute(f"DELETE FROM chunks_vec WHERE chunk_id IN ({placeholders})", chunk_ids)
+            if self.embedding_dimension > 0:
+                try:
+                    c.execute(f"DELETE FROM chunks_vec WHERE chunk_id IN ({placeholders})", chunk_ids)
+                except sqlite3.OperationalError:
+                    pass
             c.execute(f"DELETE FROM chunks WHERE id IN ({placeholders})", chunk_ids)
 
         return len(chunk_ids)
@@ -292,6 +314,8 @@ class SQLiteStore:
         Returns list of dicts with chunk_id, distance.
         Lower distance = more similar.
         """
+        if self.embedding_dimension <= 0 or not query_embedding:
+            return []
         rows = self.conn.execute(
             """SELECT chunk_id, distance
             FROM chunks_vec
@@ -301,6 +325,36 @@ class SQLiteStore:
             (_serialize_f32(query_embedding), limit),
         ).fetchall()
         return [{"chunk_id": r["chunk_id"], "distance": r["distance"]} for r in rows]
+
+    def exact_phrase_search(self, phrase: str, limit: int = 50) -> list[dict]:
+        """Find chunks containing a literal case-insensitive substring match."""
+        needle = (phrase or "").strip().lower()
+        if not needle:
+            return []
+        rows = self.conn.execute(
+            """SELECT id, file_path, chunk_index, content, title, type, tags,
+                      prov_id, content_hash, verified_at, verified_by, token_count,
+                      line_start, line_end, section_slug, sidecar_chunk_id,
+                      span_hash, confidence, heading_path
+               FROM chunks
+               WHERE instr(lower(content), ?) > 0
+                  OR instr(lower(COALESCE(title, '')), ?) > 0
+               LIMIT ?""",
+            (needle, needle, limit),
+        ).fetchall()
+        results = []
+        for r in rows:
+            item = dict(r)
+            try:
+                item["tags"] = json.loads(item["tags"]) if item.get("tags") else []
+            except (ValueError, TypeError):
+                item["tags"] = []
+            try:
+                item["heading_path"] = json.loads(item["heading_path"]) if item.get("heading_path") else None
+            except (ValueError, TypeError):
+                item["heading_path"] = None
+            results.append(item)
+        return results
 
     def bm25_search(
         self,

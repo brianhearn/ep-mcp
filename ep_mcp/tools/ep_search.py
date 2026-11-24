@@ -22,16 +22,18 @@ async def ep_search(
     max_results: int = 10,
     query_log_path: str | None = None,
     reconstruct: bool = False,
+    exact_phrase: bool = False,
 ) -> list[dict]:
     """Search the ExpertPack for relevant domain expertise.
 
     Args:
         engine: Configured RetrievalEngine for the target pack
-        query: Natural language search query
+        query: Natural language search query (or literal phrase with exact_phrase=True)
         type: Filter by content type (concept, workflow, reference, etc.)
         tags: Filter by content tags (results match at least one)
         max_results: Maximum results to return (1-50, default 10)
         reconstruct: Include original markdown spans and provenance blocks
+        exact_phrase: Return only literal case-insensitive substring matches
 
     Returns:
         List of result dicts matching the MCP output schema
@@ -46,6 +48,7 @@ async def ep_search(
         tags=tags,
         max_results=min(max(max_results, 1), 50),
         reconstruct=reconstruct,
+        exact_phrase=exact_phrase,
     )
 
     try:
@@ -121,6 +124,11 @@ async def ep_search(
             "age_stale": r.age_stale,
             "expired": r.expired,
             "expires_at": r.expires_at,
+            "pack_version": r.pack_version,
+            "integrity_status": r.integrity_status,
+            "digest_verified": r.digest_verified,
+            "provenance_token": r.provenance_token,
+            "citation_markdown": r.citation_markdown,
         }
         for r in results
     ]

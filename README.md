@@ -33,11 +33,21 @@ An MCP server that turns any ExpertPack into a live, queryable knowledge service
 - **`context_prefix` (RFC-004)**: sidecar situating strings are prepended at index time for embed + BM25 only; returned/reconstruct text stays the original atom body
 - **Tier / navigation filter**: `retrieval_strategy: navigation`, `_index.md`, `source-coverage.md`, and `context.on_demand` files are excluded from the RAG pool (still readable via `ep_read` / resources)
 - **Tools**:
-  - `ep_search` — primary hybrid retrieval tool
+  - `ep_search` — primary hybrid/lexical retrieval tool (supports `exact_phrase=true`, `reconstruct=true`; returns `pack_version`, `integrity_status`, `digest_verified`, `provenance_token`, `citation_markdown`)
   - `ep_read` — load a whole atom by path or provenance id (consume-loop step 2)
   - `ep_list_topics` — browse pack structure and available content types
-  - `ep_graph_traverse`
+  - `ep_graph_traverse` — BFS knowledge-graph traversal
+  - `ep_list_packs` — discover configured packs, versions, and integrity status over MCP
+  - `ep_describe_pack` — inspect a pack's manifest, authority boundary, freshness, license, and integrity status
+  - `ep_feedback` — append structured knowledge-gap / staleness reports to a local JSONL backlog (never modifies pack Markdown)
   - **Multi-pack stdio support**: All tools accept a `pack` parameter for routing when multiple packs are configured. Single-pack configs make `pack` optional (defaults to the only configured pack).
+- **Integrity, Security & Always Re-Embed (0.8.0+)**:
+  - Verifies `manifest.yaml` `integrity.pack_digest` / optional signature at index time (`unsigned` warns and loads; `unverifiable` refuses by default, configurable via `security.on_integrity_failure`).
+  - Runs built-in `W-SEC-01/02/03/05` security lint before files enter the index (`W-SEC-01` hidden/bidi Unicode and `W-SEC-03` secret leaks skip offending files by default; `security.strict_security: true` also blocks `W-SEC-02`/`W-SEC-05`).
+  - **Always re-embeds from Markdown:** any precomputed vector files inside a pack directory are ignored, and changing `embedding.model` or `embedding.output_dimensionality` triggers an automatic full rebuild. Note: `integrity_status: verified` proves bytes/publisher only — never factual truth or shipped vector fidelity.
+- **Zero-config & Zero-key mode (0.8.0+)**:
+  - Serve any pack immediately with `ep-mcp serve ./path/to/pack` (defaults to `stdio`, no YAML config required).
+  - Auto-detects `GEMINI_API_KEY`, `OPENAI_API_KEY` / `OPENAI_BASE_URL` (standard OpenAI or local Ollama/vLLM), or `AZURE_OPENAI_*` — and falls back cleanly to **zero-key offline lexical BM25** when no API key is configured.
 - **Resources**:
   - `ep://{slug}/manifest`
   - `ep://{slug}/authority`

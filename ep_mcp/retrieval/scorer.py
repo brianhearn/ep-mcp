@@ -344,6 +344,8 @@ def score_bm25_fallback(
     """
     # Tokenize query: lowercase, strip short/stop tokens (mirrors _sanitize_fts5_query logic)
     import re
+    from ..index.sqlite_store import _STOPWORDS
+
     raw_tokens = re.sub(r'[^\w\s]', ' ', query).lower().split()
     query_tokens = [
         t for t in raw_tokens

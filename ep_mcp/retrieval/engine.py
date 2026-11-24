@@ -98,13 +98,74 @@ class RetrievalEngine:
         graph_expansion_confidence_threshold: float | None = None,
         graph_expansion_min_score: float | None = None,
     ) -> list[SearchResult]:
-        """Hybrid search plus freshness annotation (age_stale / expired)."""
-        results = await self._search_impl(
-            request,
-            graph_expansion_confidence_threshold=graph_expansion_confidence_threshold,
-            graph_expansion_min_score=graph_expansion_min_score,
-        )
+        """Hybrid/lexical/exact-phrase search plus freshness and provenance annotation."""
+        if request.exact_phrase:
+            results = self._search_exact_phrase(request, request.max_results)
+        else:
+            results = await self._search_impl(
+                request,
+                graph_expansion_confidence_threshold=graph_expansion_confidence_threshold,
+                graph_expansion_min_score=graph_expansion_min_score,
+            )
         self._annotate_freshness(results)
+        self._annotate_provenance_and_integrity(results)
+        return results
+
+    def _annotate_provenance_and_integrity(self, results: list[SearchResult]) -> None:
+        """Attach pack_version, integrity_status, compact provenance_token, and citation_markdown."""
+        for r in results:
+            r.pack_version = self.pack.version
+            r.integrity_status = self.pack.integrity_status
+            r.digest_verified = self.pack.digest_verified
+            ref_id = r.id or f"{self.pack.slug}/{r.source_file}"
+            grade = r.confidence or "unspecified"
+            verified = r.verified_at or "unverified"
+            r.provenance_token = f"[ep:{ref_id}@v{self.pack.version}|{grade}|{verified}|{self.pack.integrity_status}]"
+            heading = f" § {' > '.join(r.heading_path)}" if r.heading_path else ""
+            r.citation_markdown = f"> **{r.provenance_token}** — `{r.source_file}`{heading}"
+
+    def _search_exact_phrase(self, request: SearchRequest, max_results: int) -> list[SearchResult]:
+        """Literal case-insensitive substring search honoring type/tag filters."""
+        needle = (request.query or "").strip().lower()
+        if not needle:
+            return []
+        rows = self.store.exact_phrase_search(needle, limit=max(max_results * 5, 50))
+        scored: list[tuple[float, dict]] = []
+        for row in rows:
+            if request.type and (row.get("type") or "").lower() != request.type.lower():
+                continue
+            if request.tags:
+                row_tags = {str(t).lower() for t in (row.get("tags") or [])}
+                if not any(t.lower() in row_tags for t in request.tags):
+                    continue
+            content_low = (row.get("content") or "").lower()
+            title_low = (row.get("title") or "").lower()
+            occurrences = content_low.count(needle)
+            title_bonus = 0.25 if needle in title_low else 0.0
+            score = min(1.0, round(0.65 + min(0.10, occurrences * 0.03) + title_bonus, 4))
+            scored.append((score, row))
+
+        scored.sort(key=lambda pair: (-pair[0], pair[1]["file_path"], pair[1]["chunk_index"]))
+        results: list[SearchResult] = []
+        for score, row in scored[:max_results]:
+            lr = (row["line_start"], row["line_end"]) if row.get("line_start") and row.get("line_end") else None
+            results.append(SearchResult(
+                text=row["content"],
+                source_file=row["file_path"],
+                id=row.get("prov_id"),
+                content_hash=row.get("content_hash"),
+                verified_at=row.get("verified_at"),
+                score=score,
+                type=row.get("type"),
+                tags=row.get("tags") or [],
+                chunk_index=row.get("chunk_index", 0),
+                title=row.get("title"),
+                line_range=lr,
+                section_slug=row.get("section_slug"),
+                span_hash=row.get("span_hash"),
+                confidence=row.get("confidence"),
+                heading_path=row.get("heading_path"),
+            ))
         return results
 
     def _annotate_freshness(self, results: list[SearchResult]) -> None:
@@ -166,6 +227,10 @@ class RetrievalEngine:
                 "intent_routing | query='%s' intent=%s vector_weight=%.2f text_weight=%.2f",
                 request.query, intent_result.intent.value, vector_weight, text_weight,
             )
+
+        # Zero-key lexical/BM25-only mode (dimension == 0): bypass embedding cleanly
+        if getattr(self.provider, "dimension", 0) == 0 and request.vector is None:
+            return await self._search_bm25_fallback(request, max_results, candidate_count)
 
         # Step 2: Dual search
         # Embedding may fail (provider outage, quota, etc.). Gracefully degrade to

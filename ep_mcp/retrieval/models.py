@@ -38,6 +38,13 @@ class SearchRequest(BaseModel):
             "structured provenance block for verification."
         ),
     )
+    exact_phrase: bool = Field(
+        default=False,
+        description=(
+            "When true, return only chunks containing a literal case-insensitive "
+            "substring match for query (lexical exact-phrase mode)."
+        ),
+    )
 
 
 class SearchResult(BaseModel):
@@ -117,3 +124,18 @@ class SearchResult(BaseModel):
         None, description="True when a volatile file's expires_at is in the past",
     )
     expires_at: str | None = Field(None, description="Volatile expires_at (ISO date)")
+    pack_version: str | None = Field(None, description="Pack manifest.version")
+    integrity_status: str | None = Field(
+        None, description="Pack integrity status: unsigned | verified | unverifiable",
+    )
+    digest_verified: bool | None = Field(
+        None, description="True when manifest integrity.pack_digest matches pack files",
+    )
+    provenance_token: str | None = Field(
+        None,
+        description="Compact structured provenance token (e.g. [ep:id@v1.0|expert-verified|2026-10-01|unsigned])",
+    )
+    citation_markdown: str | None = Field(
+        None,
+        description="Compact citation-keyed markdown header referencing this atom/chunk",
+    )

@@ -42,21 +42,20 @@ class EmbeddingConfig(BaseModel):
 
     provider options:
       - "gemini"       : Google Gemini (default). Requires GEMINI_API_KEY.
+      - "openai"       : OpenAI or OpenAI-compatible (Ollama/vLLM via openai_base_url).
       - "azure-openai" : Azure OpenAI. Requires AZURE_OPENAI_ENDPOINT and
                          AZURE_OPENAI_API_KEY (or set azure_endpoint / azure_api_key).
+      - "lexical" / "none": Zero-key offline BM25-only mode (no vector embeddings).
 
-    Azure OpenAI models:
-      - text-embedding-3-large  (3072d, recommended — same dimension as Gemini default)
-      - text-embedding-3-small  (1536d, lighter/cheaper)
-      - text-embedding-ada-002  (1536d, legacy)
-
-    Note: embedding dimensions must match at index time. Changing provider on an
-    existing index requires a full reindex (rm -rf <pack>/.ep-mcp/ then restart).
+    Note: changing embedding model or dimension triggers an automatic full rebuild.
     """
 
     provider: str = "gemini"
     model: str = "gemini-embedding-001"
     output_dimensionality: int | None = None  # MRL: None=full dim, e.g. 768=4x smaller
+    # Standard OpenAI or OpenAI-compatible endpoint (Ollama, LM Studio, etc.)
+    openai_api_key: str | None = None        # overrides OPENAI_API_KEY env var
+    openai_base_url: str | None = None       # e.g. "http://localhost:11434/v1" for Ollama
     # Azure OpenAI — required when provider="azure-openai"
     azure_endpoint: str | None = None        # overrides AZURE_OPENAI_ENDPOINT env var
     azure_api_key: str | None = None         # overrides AZURE_OPENAI_API_KEY env var
@@ -182,6 +181,30 @@ class RetrievalConfig(BaseModel):
     requires_expansion_score: float = 0.30      # displayed score for appended atoms (below typical threshold)
 
 
+class SecurityConfig(BaseModel):
+    """Pack integrity verification and index-time security lint policy."""
+
+    # Policy when manifest.yaml integrity is 'unverifiable' (digest mismatch or bad signature):
+    #   "refuse" (default) — refuse to index or serve the pack
+    #   "warn"             — log a warning and continue loading
+    # Note: 'unsigned' packs always warn and load.
+    on_integrity_failure: str = "refuse"
+
+    # Run built-in W-SEC-01/02/03/05 lint before files enter the index.
+    check_security_lint: bool = True
+
+    # Policy for blocking W-SEC findings:
+    #   "skip" (default) — exclude offending files from the RAG index
+    #   "refuse"         — refuse to index/serve the entire pack
+    #   "warn"           — log warnings only
+    on_security_finding: str = "skip"
+
+    # False (default): W-SEC-01 (hidden/bidi Unicode) and W-SEC-03 (secrets) block;
+    #   W-SEC-02/05 warn.
+    # True: W-SEC-02 (override/exfil) and W-SEC-05 (unscoped oversight loosening) also block.
+    strict_security: bool = False
+
+
 class ServerConfig(BaseModel):
     """Top-level server configuration."""
 
@@ -192,6 +215,7 @@ class ServerConfig(BaseModel):
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     reranker: RerankerConfig = Field(default_factory=RerankerConfig)
+    security: SecurityConfig = Field(default_factory=SecurityConfig)
     # Dev mode: watch pack source directories for .md changes and trigger live reindex.
     # Requires: pip install watchdog. Not for production use.
     dev_mode_watch: bool = False
@@ -201,6 +225,10 @@ class ServerConfig(BaseModel):
     # production queries and measuring retrieval quality over time.
     # Example: query_log_path: "/var/log/ep-mcp-queries.jsonl"
     query_log_path: str | None = None
+
+    # Optional directory for ep_feedback JSONL backlog files (one <slug>.jsonl per pack).
+    # When None, feedback writes to <pack>/.ep-mcp/feedback.jsonl (never mutates pack Markdown).
+    feedback_dir: str | None = None
 
     # MCP Streamable HTTP DNS-rebinding allowlists (SDK v2).
     # Host headers often include a port — include both bare and `host:*` forms.

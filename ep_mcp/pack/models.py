@@ -159,6 +159,9 @@ class Manifest(BaseModel):
     description: str = ""
     entry_point: str = "overview.md"
     schema_version: str = ""
+    license: str | None = None
+    canonical_url: str | None = None
+    applies_to: str | None = None
     context: ContextTiers = Field(default_factory=ContextTiers)
     freshness: FreshnessMetadata = Field(default_factory=FreshnessMetadata)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
@@ -213,3 +216,15 @@ class Pack(BaseModel):
     )
     index_path: str = Field("", description="Path to SQLite index file")
     pack_dir: str = Field("", description="Absolute path to pack directory")
+    integrity_status: str = Field(
+        "unsigned",
+        description="Pack integrity verification status: unsigned | verified | unverifiable",
+    )
+    digest_verified: bool = Field(
+        False,
+        description="True when manifest integrity.pack_digest matches current pack files",
+    )
+    security_blocked_files: list[str] = Field(
+        default_factory=list,
+        description="Pack-relative files skipped from indexing due to W-SEC findings",
+    )

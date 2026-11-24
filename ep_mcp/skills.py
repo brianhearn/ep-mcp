@@ -36,6 +36,7 @@ DEFAULT_TTL_MS = 3_600_000
 MAX_SKILL_FILES = 512          # spec: servers SHOULD NOT exceed 512 files / 16 MiB per skill
 MAX_SKILL_BYTES = 16 * 1024 * 1024
 MAX_DESCRIPTION = 1000         # Agent Skills caps description at 1024 chars
+MAX_SKILL_BODY_CHARS = 10_000  # Strict shared Agent Skills body ceiling
 _NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 
@@ -119,13 +120,24 @@ def generate_skill_md(pack: Pack, paths: list[str] | None = None) -> str:
             lines.append("- Do not assert a claim unless a pack file supports it.")
         lines.append("")
     lines += ["## Path map", ""]
+    prefix = "\n".join(lines) + "\n"
+    budget = MAX_SKILL_BODY_CHARS - len(prefix) - 100
+    map_lines: list[str] = []
+    used = 0
+    omitted = 0
     for p in paths:
         f = pack.files[p]
         title = (f.title or p).replace("\n", " ")
         typ = f" ({f.type})" if f.type else ""
-        lines.append(f"- [{title}]({p}){typ}")
-    lines.append("")
-    return "\n".join(lines)
+        entry_line = f"- [{title}]({p}){typ}\n"
+        if used + len(entry_line) > budget:
+            omitted += 1
+            continue
+        map_lines.append(entry_line)
+        used += len(entry_line)
+    if omitted:
+        map_lines.append(f"\n*({omitted} additional pack files available via `skills/get` or `ep_list_topics`.)*\n")
+    return prefix + "".join(map_lines)
 
 
 class SkillCatalog:

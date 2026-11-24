@@ -27,6 +27,8 @@ from .retrieval.graph_helpers import GraphLookup
 from .prompts.pack_prompts import register_prompts
 from .skills import SkillCatalog, build_skills_extension, register_skill_resources, skills_enabled
 from .resources.pack_resources import register_resources
+from .tools.ep_describe import ep_describe_pack, ep_list_packs
+from .tools.ep_feedback import ep_feedback
 from .tools.ep_graph_traverse import ep_graph_traverse
 from .tools.ep_list_topics import ep_list_topics
 from .tools.ep_read import ep_read
@@ -49,14 +51,26 @@ class PackInstance:
 def create_embedding_provider(config: ServerConfig) -> EmbeddingProvider:
     """Create the configured embedding provider."""
     from .embeddings.azure_openai import AzureOpenAIEmbeddingProvider
+    from .embeddings.lexical import LexicalOnlyEmbeddingProvider
+    from .embeddings.openai_provider import OpenAIEmbeddingProvider
 
     emb = config.embedding
-    if emb.provider == "gemini":
+    provider_name = (emb.provider or "gemini").strip().lower()
+    if provider_name in {"lexical", "none", "bm25"}:
+        return LexicalOnlyEmbeddingProvider()
+    if provider_name == "gemini":
         return GeminiEmbeddingProvider(
             model=emb.model,
             output_dimensionality=emb.output_dimensionality,
         )
-    if emb.provider == "azure-openai":
+    if provider_name == "openai":
+        return OpenAIEmbeddingProvider(
+            model=emb.model or "text-embedding-3-small",
+            api_key=emb.openai_api_key,
+            base_url=emb.openai_base_url,
+            output_dimensionality=emb.output_dimensionality,
+        )
+    if provider_name == "azure-openai":
         return AzureOpenAIEmbeddingProvider(
             model=emb.model or "text-embedding-3-large",
             azure_endpoint=emb.azure_endpoint,
@@ -67,7 +81,7 @@ def create_embedding_provider(config: ServerConfig) -> EmbeddingProvider:
         )
     raise ValueError(
         f"Unsupported embedding provider: {emb.provider!r}. "
-        f"Supported: 'gemini', 'azure-openai'"
+        f"Supported: 'gemini', 'openai', 'azure-openai', 'lexical'"
     )
 
 
@@ -121,6 +135,7 @@ def create_pack_mcp(
     graph_lookup: GraphLookup | None = None,
     query_log_path: str | None = None,
     skills_private: bool = False,
+    feedback_dir: str | None = None,
 ):
     """Create an MCPServer instance with tools, resources, and prompts for a pack."""
     from mcp.server.mcpserver import MCPServer
@@ -153,26 +168,29 @@ def create_pack_mcp(
         tags: list[str] | None = None,
         max_results: int = 10,
         reconstruct: bool = False,
+        exact_phrase: bool = False,
     ) -> list | dict:
         """Search the ExpertPack for relevant domain expertise.
 
         Args:
-            query: Natural language search query.
+            query: Natural language search query (or literal phrase when exact_phrase=true).
             type: Filter by content type (concept, workflow, reference,
                   troubleshooting, faq, specification, etc.)
             tags: Filter by content tags. Results must match at least one.
             max_results: Maximum results to return (1-50, default 10).
             reconstruct: Include original markdown spans and provenance blocks
                 for verification/reconstruction (default false).
+            exact_phrase: Return only literal case-insensitive substring matches (default false).
 
         Returns:
-            Ranked results with provenance metadata.
+            Ranked results with provenance metadata, pack_version, integrity_status, and citation tokens.
         """
         try:
             return await ep_search(
                 engine, query, type, tags, max_results,
                 query_log_path=query_log_path,
                 reconstruct=reconstruct,
+                exact_phrase=exact_phrase,
             )
         except Exception as e:
             logger.exception(
@@ -292,6 +310,74 @@ def create_pack_mcp(
             )
             return {"error": str(e), "pack": slug, "path": path, "id": id}
 
+    @mcp.tool(
+        title="Describe ExpertPack",
+        annotations={
+            "title": "Describe ExpertPack",
+            "readOnlyHint": True,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
+    )
+    async def ep_describe_pack_tool() -> dict:
+        """Describe this ExpertPack (version, integrity_status, authority boundary, freshness, counts)."""
+        chunk_count = engine.store.chunk_count() if engine and engine.store else None
+        return ep_describe_pack(pack, chunk_count=chunk_count)
+
+    @mcp.tool(
+        title="List ExpertPacks",
+        annotations={
+            "title": "List ExpertPacks",
+            "readOnlyHint": True,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
+    )
+    async def ep_list_packs_tool() -> dict:
+        """List available ExpertPacks served by this endpoint."""
+        chunk_count = engine.store.chunk_count() if engine and engine.store else None
+        return ep_list_packs({slug: (pack, chunk_count)})
+
+    @mcp.tool(
+        title="Submit ExpertPack Feedback",
+        annotations={
+            "title": "Submit ExpertPack Feedback",
+            "readOnlyHint": False,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        }
+    )
+    async def ep_feedback_tool(
+        kind: str,
+        detail: str,
+        path: str | None = None,
+        id: str | None = None,
+        reason: str | None = None,
+        user_goal: str | None = None,
+    ) -> dict:
+        """Report a knowledge gap, stale atom, or inaccuracy to the pack's local hydration backlog.
+
+        Does NOT modify pack Markdown files. Writes an append-only JSONL record for human review.
+
+        Args:
+            kind: Issue category: missing | stale | incorrect | other.
+            detail: Concrete description of the gap, stale fact, or error.
+            path: Optional pack-relative file path.
+            id: Optional atom provenance id.
+            reason: Optional rationale or evidence.
+            user_goal: Optional summary of what the user was trying to accomplish.
+        """
+        return ep_feedback(
+            pack,
+            kind=kind,
+            detail=detail,
+            path=path,
+            id=id,
+            reason=reason,
+            user_goal=user_goal,
+            feedback_dir=feedback_dir,
+        )
+
     # Register resources (always-tier files, overview, manifest, additional declared)
     register_resources(mcp, pack)
 
@@ -304,6 +390,7 @@ def create_pack_mcp(
 def create_multi_pack_mcp(
     pack_instances: dict[str, PackInstance],
     query_log_path: str | None = None,
+    feedback_dir: str | None = None,
 ):
     """Create an MCPServer with multi-pack routing for stdio transport.
     
@@ -381,11 +468,12 @@ def create_multi_pack_mcp(
         tags: list[str] | None = None,
         max_results: int = 10,
         reconstruct: bool = False,
+        exact_phrase: bool = False,
     ) -> list | dict:
         """Search an ExpertPack for relevant domain expertise.
 
         Args:
-            query: Natural language search query.
+            query: Natural language search query (or literal phrase when exact_phrase=true).
             pack: Pack slug to query. Required when multiple packs are configured.
             type: Filter by content type (concept, workflow, reference,
                   troubleshooting, faq, specification, etc.)
@@ -393,9 +481,10 @@ def create_multi_pack_mcp(
             max_results: Maximum results to return (1-50, default 10).
             reconstruct: Include original markdown spans and provenance blocks
                 for verification/reconstruction (default false).
+            exact_phrase: Return only literal case-insensitive substring matches (default false).
 
         Returns:
-            Ranked results with provenance metadata.
+            Ranked results with provenance metadata, pack_version, integrity_status, and citation tokens.
         """
         slug, inst_or_error = _resolve_pack(pack)
         if slug is None:
@@ -407,6 +496,7 @@ def create_multi_pack_mcp(
                 inst.engine, query, type, tags, max_results,
                 query_log_path=query_log_path,
                 reconstruct=reconstruct,
+                exact_phrase=exact_phrase,
             )
         except Exception as e:
             logger.exception(
@@ -542,6 +632,85 @@ def create_multi_pack_mcp(
             )
             return {"error": str(e), "pack": slug, "path": path, "id": id}
 
+    @mcp.tool(
+        annotations={
+            "readOnlyHint": True,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
+    )
+    async def ep_list_packs_tool() -> dict:
+        """List all configured ExpertPacks with version, integrity status, and counts."""
+        mapping = {
+            s: (i.pack, i.store.chunk_count() if i.store else None)
+            for s, i in pack_instances.items()
+        }
+        return ep_list_packs(mapping)
+
+    @mcp.tool(
+        annotations={
+            "readOnlyHint": True,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
+    )
+    async def ep_describe_pack_tool(pack: str | None = None) -> dict:
+        """Describe an ExpertPack (version, integrity_status, authority boundary, freshness, counts).
+
+        Args:
+            pack: Pack slug to describe. Required when multiple packs are configured.
+        """
+        slug, inst_or_error = _resolve_pack(pack)
+        if slug is None:
+            return {"error": inst_or_error}
+        inst = inst_or_error
+        chunk_count = inst.store.chunk_count() if inst.store else None
+        return ep_describe_pack(inst.pack, chunk_count=chunk_count)
+
+    @mcp.tool(
+        annotations={
+            "readOnlyHint": False,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        }
+    )
+    async def ep_feedback_tool(
+        kind: str,
+        detail: str,
+        pack: str | None = None,
+        path: str | None = None,
+        id: str | None = None,
+        reason: str | None = None,
+        user_goal: str | None = None,
+    ) -> dict:
+        """Report a knowledge gap, stale atom, or inaccuracy to the pack's local hydration backlog.
+
+        Does NOT modify pack Markdown files. Writes an append-only JSONL record for human review.
+
+        Args:
+            kind: Issue category: missing | stale | incorrect | other.
+            detail: Concrete description of the gap, stale fact, or error.
+            pack: Pack slug. Required when multiple packs are configured.
+            path: Optional pack-relative file path.
+            id: Optional atom provenance id.
+            reason: Optional rationale or evidence.
+            user_goal: Optional summary of what the user was trying to accomplish.
+        """
+        slug, inst_or_error = _resolve_pack(pack)
+        if slug is None:
+            return {"error": inst_or_error}
+        inst = inst_or_error
+        return ep_feedback(
+            inst.pack,
+            kind=kind,
+            detail=detail,
+            path=path,
+            id=id,
+            reason=reason,
+            user_goal=user_goal,
+            feedback_dir=feedback_dir,
+        )
+
     # Register resources and prompts for each pack
     # Note: Resources use URI templates and can encode pack in the URI itself
     for slug, inst in pack_instances.items():
@@ -566,7 +735,7 @@ async def init_pack(
     store = SQLiteStore(pack.index_path, embedding_dimension=provider.dimension)
     store.open()
 
-    manager = IndexManager(pack, store, provider)
+    manager = IndexManager(pack, store, provider, security_config=config.security)
     stats = await manager.build_index()
     logger.info("Pack '%s' indexed: %s", slug, stats)
 
@@ -602,6 +771,7 @@ async def init_pack(
         slug, pack, engine, graph_lookup,
         query_log_path=config.query_log_path,
         skills_private=bool(pack_cfg is not None and pack_cfg.api_keys),
+        feedback_dir=config.feedback_dir,
     )
 
     return PackInstance(pack=pack, store=store, engine=engine, mcp=mcp, index_manager=manager)
